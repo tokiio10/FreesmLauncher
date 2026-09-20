@@ -58,6 +58,7 @@ class QLabel;
 class MinecraftLauncher;
 class BaseProfilerFactory;
 class InstanceView;
+class Dashboard;
 class KonamiCode;
 class InstanceTask;
 class LabeledToolButton;
@@ -81,6 +82,8 @@ class MainWindow : public QMainWindow {
     void updatesAllowedChanged(bool allowed);
 
     void processURLs(QList<QUrl> urls);
+
+    BaseInstance* selectedInstance() const { return m_selectedInstance; }
    signals:
     void isClosing();
 
@@ -230,10 +233,14 @@ class MainWindow : public QMainWindow {
     void runModalTask(Task* task);
     void instanceFromInstanceTask(InstanceTask* task);
 
+    void installDashboard();
+    void showDashboardContextMenu(const QPoint& globalPos);
+
    private:
     Ui::MainWindow* ui;
     // these are managed by Qt's memory management model!
     InstanceView* view = nullptr;
+    Dashboard* m_dashboard = nullptr;
     InstanceProxyModel* proxymodel = nullptr;
     QToolButton* newsLabel = nullptr;
     QLabel* m_statusLeft = nullptr;

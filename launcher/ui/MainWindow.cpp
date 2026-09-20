@@ -44,6 +44,7 @@
 
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
+#include "ui/widgets/Dashboard.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -432,6 +433,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
     view->setFocus();
 
     retranslateUi();
+
+    installDashboard();
 }
 
 // macOS always has a native menu bar, so these fixes are not applicable
@@ -1550,7 +1553,11 @@ void MainWindow::on_actionExportInstanceFlamePack_triggered()
 void MainWindow::on_actionRenameInstance_triggered()
 {
     if (m_selectedInstance) {
-        view->edit(view->currentIndex());
+        if (m_dashboard) {
+            m_dashboard->editCurrent();
+        } else {
+            view->edit(view->currentIndex());
+        }
     }
 }
 
@@ -1669,6 +1676,10 @@ void MainWindow::instanceChanged(const QModelIndex& current, [[maybe_unused]] co
 
         connect(m_selectedInstance, &BaseInstance::runningStatusChanged, this, &MainWindow::refreshCurrentInstance);
         connect(m_selectedInstance, &BaseInstance::profilerChanged, this, &MainWindow::refreshCurrentInstance);
+
+        if (m_dashboard) {
+            m_dashboard->refresh();
+        }
     } else {
         APPLICATION->settings()->set("SelectedInstance", QString());
         selectionBad();
@@ -1702,6 +1713,10 @@ void MainWindow::selectionBad()
     updateLaunchButton();
     renameButton->setText(tr("Rename Instance"));
     updateInstanceToolIcon("grass");
+
+    if (m_dashboard) {
+        m_dashboard->refresh();
+    }
 
     // ...and then see if we can enable the previously selected instance
     setSelectedInstanceById(APPLICATION->settings()->get("SelectedInstance").toString());
@@ -1762,6 +1777,80 @@ void MainWindow::setInstanceActionsEnabled(bool enabled)
     ui->actionDeleteInstance->setEnabled(enabled);
     ui->actionCopyInstance->setEnabled(enabled);
     ui->actionCreateInstanceShortcut->setEnabled(enabled);
+}
+
+void MainWindow::installDashboard()
+{
+    DashboardActions actions;
+    actions.launch = ui->actionLaunchInstance;
+    actions.kill = ui->actionKillInstance;
+    actions.edit = ui->actionEditInstance;
+    actions.settings = ui->actionSettings;
+    actions.addInstance = ui->actionAddInstance;
+    actions.folders = ui->actionFoldersButton;
+    actions.help = ui->actionHelpButton;
+    actions.accounts = ui->actionAccountsButton;
+    actions.checkUpdate = ui->actionCheckUpdate;
+    actions.moreNews = ui->actionMoreNews;
+    actions.viewLog = ui->actionViewLog;
+
+    // Hidden toolbars would silently disable their keyboard shortcuts: attach them to the window itself.
+    const auto allActions = findChildren<QAction*>();
+    for (QAction* action : allActions) {
+        if (!action->shortcut().isEmpty()) {
+            addAction(action);
+        }
+    }
+
+    m_dashboard = new Dashboard(proxymodel, view->selectionModel(), actions, ui->centralWidget);
+    m_dashboard->setSelectedInstanceGetter([this]() { return m_selectedInstance; });
+    ui->horizontalLayout->setContentsMargins(0, 0, 0, 0);
+    ui->horizontalLayout->addWidget(m_dashboard);
+
+    // The original view stays alive: it owns the selection and the group logic. It is just not shown.
+    view->hide();
+
+    connect(m_dashboard, &Dashboard::instanceActivated, this, &MainWindow::instanceActivated);
+    connect(m_dashboard, &Dashboard::instanceContextMenuRequested, this, &MainWindow::showDashboardContextMenu);
+    connect(m_dashboard, &Dashboard::urlsDropped, this, &MainWindow::processURLs, Qt::QueuedConnection);
+
+    ui->mainToolBar->hide();
+    ui->newsToolBar->hide();
+    ui->instanceToolBar->hide();
+    ui->menuBar->hide();
+    statusBar()->hide();
+
+    if (width() < 1180 || height() < 740) {
+        resize(qMax(width(), 1180), qMax(height(), 740));
+    }
+    m_dashboard->refresh();
+}
+
+void MainWindow::showDashboardContextMenu(const QPoint& globalPos)
+{
+    if (!m_selectedInstance) {
+        return;
+    }
+    // same entries as the classic instance context menu
+    QList<QAction*> actions = ui->fileMenu->actions();
+    actions.removeFirst();
+    actions.removeLast();
+    actions.removeLast();
+    actions.prepend(ui->actionChangeInstIcon);
+    actions.prepend(ui->actionRenameInstance);
+
+    QAction* actionSep = new QAction("", this);
+    actionSep->setSeparator(true);
+    actions.prepend(actionSep);
+    QAction* actionHeader = new QAction(m_selectedInstance->name(), this);
+    actionHeader->setEnabled(false);
+    actions.prepend(actionHeader);
+
+    QMenu menu;
+    menu.addActions(actions);
+    menu.exec(globalPos);
+    actionSep->deleteLater();
+    actionHeader->deleteLater();
 }
 
 void MainWindow::refreshCurrentInstance()
