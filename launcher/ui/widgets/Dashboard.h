@@ -26,14 +26,21 @@ class BaseInstance;
 class QDragEnterEvent;
 class QDropEvent;
 class QFrame;
+class QGraphicsDropShadowEffect;
+class QGraphicsOpacityEffect;
 class QLabel;
 class QListView;
-class QShowEvent;
 class QProgressBar;
+class QShowEvent;
 class QSlider;
+class QTimer;
+class QVariantAnimation;
 
-class AvatarStrip;
-class SwitchToggle;
+class DashAvatars;
+class DashButton;
+class DashHeroIcon;
+class DashSwitch;
+class DashWallpaper;
 
 /** The existing main window actions the dashboard is allowed to trigger. */
 struct DashboardActions {
@@ -42,12 +49,12 @@ struct DashboardActions {
     QAction* edit = nullptr;
     QAction* settings = nullptr;
     QAction* addInstance = nullptr;
+    QAction* changeIcon = nullptr;
     QAction* folders = nullptr;   // carries the folders menu
     QAction* help = nullptr;      // carries the help menu
     QAction* accounts = nullptr;  // carries the accounts menu
     QAction* checkUpdate = nullptr;
     QAction* moreNews = nullptr;
-    QAction* viewLog = nullptr;
 };
 
 class Dashboard : public QWidget {
@@ -77,8 +84,16 @@ class Dashboard : public QWidget {
    private:
     void buildUi(const DashboardActions& actions);
     void openInstancePage(const QString& page);
-    void syncMemorySlider();
     void updateInstanceCount();
+
+    // appearance drawer
+    void applyTheme();
+    void scheduleThemeApply();
+    void applyWallpaper();
+    void syncThemeControls();
+    void chooseWallpaper();
+    void removeWallpaper();
+    void setDrawerExpanded(bool expanded);
 
     QAbstractItemModel* m_model = nullptr;
     QItemSelectionModel* m_selection = nullptr;
@@ -86,10 +101,17 @@ class Dashboard : public QWidget {
     DashboardActions m_actions;
 
     QListView* m_list = nullptr;
+    DashWallpaper* m_centerPanel = nullptr;
     QLabel* m_countChip = nullptr;
+    QWidget* m_heroContent = nullptr;
+    QGraphicsOpacityEffect* m_heroFade = nullptr;
+    QVariantAnimation* m_heroAnim = nullptr;
+    DashHeroIcon* m_heroIcon = nullptr;
     QLabel* m_heroName = nullptr;
     QLabel* m_heroSub = nullptr;
-    QLabel* m_heroIcon = nullptr;
+    DashButton* m_playButton = nullptr;
+    DashButton* m_stopButton = nullptr;
+    QGraphicsDropShadowEffect* m_playGlow = nullptr;
     QLabel* m_statusText = nullptr;
     QLabel* m_playtime = nullptr;
     QProgressBar* m_activity = nullptr;
@@ -99,12 +121,21 @@ class Dashboard : public QWidget {
     QLabel* m_cardBadge = nullptr;
     QLabel* m_cardPlayed = nullptr;
     QLabel* m_accountBadge = nullptr;
-    QLabel* m_ramValue = nullptr;
-    QLabel* m_ramMin = nullptr;
-    QLabel* m_ramMax = nullptr;
-    QSlider* m_ramSlider = nullptr;
-    SwitchToggle* m_consoleToggle = nullptr;
-    AvatarStrip* m_avatars = nullptr;
+    DashAvatars* m_avatars = nullptr;
     QList<QWidget*> m_pageButtons;
-    bool m_syncingSlider = false;
+
+    // appearance drawer widgets
+    QWidget* m_drawerBody = nullptr;
+    QVariantAnimation* m_drawerAnim = nullptr;
+    QLabel* m_drawerChevron = nullptr;
+    bool m_drawerOpen = false;
+    QSlider* m_hueSlider = nullptr;
+    QSlider* m_dimSlider = nullptr;
+    DashSwitch* m_onlyThisInstance = nullptr;
+    DashButton* m_baseDark = nullptr;
+    DashButton* m_baseAmoled = nullptr;
+    QLabel* m_wallpaperName = nullptr;
+    QTimer* m_themeTimer = nullptr;
+    QString m_lastInstanceId;
+    bool m_syncingTheme = false;
 };

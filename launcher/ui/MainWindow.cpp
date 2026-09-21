@@ -442,7 +442,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui(new Ui::MainWi
 #ifndef Q_OS_MAC
 void MainWindow::keyReleaseEvent(QKeyEvent* event)
 {
-    if (event->key() == Qt::Key_Alt && !APPLICATION->settings()->get("MenuBarInsteadOfToolBar").toBool())
+    if (!m_dashboard && event->key() == Qt::Key_Alt && !APPLICATION->settings()->get("MenuBarInsteadOfToolBar").toBool())
         ui->menuBar->setVisible(!ui->menuBar->isVisible());
     else
         QMainWindow::keyReleaseEvent(event);
@@ -593,6 +593,12 @@ void MainWindow::showInstanceContextMenu(const QPoint& pos)
 
 void MainWindow::updateMainToolBar()
 {
+    if (m_dashboard) {
+        // the dashboard replaces the classic toolbar and menu bar
+        ui->menuBar->setVisible(false);
+        ui->mainToolBar->setVisible(false);
+        return;
+    }
     ui->menuBar->setVisible(APPLICATION->settings()->get("MenuBarInsteadOfToolBar").toBool());
     ui->mainToolBar->setVisible(ui->menuBar->isNativeMenuBar() || !APPLICATION->settings()->get("MenuBarInsteadOfToolBar").toBool());
 }
@@ -1787,12 +1793,12 @@ void MainWindow::installDashboard()
     actions.edit = ui->actionEditInstance;
     actions.settings = ui->actionSettings;
     actions.addInstance = ui->actionAddInstance;
+    actions.changeIcon = ui->actionChangeInstIcon;
     actions.folders = ui->actionFoldersButton;
     actions.help = ui->actionHelpButton;
     actions.accounts = ui->actionAccountsButton;
     actions.checkUpdate = ui->actionCheckUpdate;
     actions.moreNews = ui->actionMoreNews;
-    actions.viewLog = ui->actionViewLog;
 
     // Hidden toolbars would silently disable their keyboard shortcuts: attach them to the window itself.
     const auto allActions = findChildren<QAction*>();
