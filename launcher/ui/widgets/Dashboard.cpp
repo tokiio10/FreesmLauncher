@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 /*
- *  Emerald Glass dashboard - a full visual replacement for the main window contents.
+ *  Tokio dashboard - a full visual replacement for the main window contents.
  *
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -20,10 +20,10 @@
 #include <QFileInfo>
 #include <QFontMetrics>
 #include <QFrame>
-#include <QGraphicsDropShadowEffect>
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QHash>
+#include <QImage>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -40,7 +40,7 @@
 #include <QPixmap>
 #include <QPolygonF>
 #include <QProgressBar>
-#include <QRadialGradient>
+#include <QRegion>
 #include <QRegularExpression>
 #include <QSlider>
 #include <QStyledItemDelegate>
@@ -48,6 +48,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVariantAnimation>
+#include <QVector>
 #include <QtMath>
 
 #include "Application.h"
@@ -63,22 +64,10 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 // Small colour helpers
 // ---------------------------------------------------------------------------------------------
-const QColor kCyan(0x22, 0xd3, 0xee);
-const QColor kPurple(0xa7, 0x8b, 0xfa);
-const QColor kTextBright(0xf4, 0xf4, 0xf5);
-const QColor kText(0xe4, 0xe4, 0xe7);
-const QColor kTextMuted(0xa1, 0xa1, 0xaa);
-const QColor kTextDim(0x71, 0x71, 0x7a);
-
 QColor withAlpha(QColor c, int alpha)
 {
     c.setAlpha(qBound(0, alpha, 255));
     return c;
-}
-
-QColor whiteA(int alpha)
-{
-    return QColor(255, 255, 255, qBound(0, alpha, 255));
 }
 
 QColor mixColors(const QColor& a, const QColor& b, qreal t)
@@ -88,24 +77,89 @@ QColor mixColors(const QColor& a, const QColor& b, qreal t)
                             a.blueF() + (b.blueF() - a.blueF()) * t, a.alphaF() + (b.alphaF() - a.alphaF()) * t);
 }
 
+QFont monoFont(int pixelSize, bool bold)
+{
+    QFont f;
+    f.setFamilies({ QStringLiteral("Cascadia Mono"), QStringLiteral("Consolas"), QStringLiteral("Lucida Console"),
+                    QStringLiteral("DejaVu Sans Mono"), QStringLiteral("Courier New") });
+    f.setStyleHint(QFont::Monospace);
+    f.setPixelSize(pixelSize);
+    f.setBold(bold);
+    return f;
+}
+
 // ---------------------------------------------------------------------------------------------
-// Live theme: accent colour, base tone and wallpapers. Persisted next to the launcher data.
+// Palettes ("estilos"). Every style keeps exactly the same layout, only the mood changes.
+// ---------------------------------------------------------------------------------------------
+enum Weather { WeatherStars = 0, WeatherRain = 1, WeatherPetals = 2, WeatherMist = 3 };
+
+struct Palette {
+    const char16_t* name;
+    QRgb bg, panelTop, panelBottom, ink, text, muted, dim;
+    QRgb accent, accentLight, secondary, tertiary;
+    QRgb sky[5];
+    QRgb sun, skyline, window;
+    int weather;
+};
+
+const Palette kPalettes[] = {
+    // 0 - Atardecer: city-pop dusk over the city
+    { u"Atardecer", 0x0f0d1a, 0x1b1733, 0x120f24, 0xf1cfa8, 0xf4e2c8, 0xa79dc4, 0x6f6791, 0xf2553f, 0xff8a6a, 0xd6479a, 0x8b7bd8,
+      { 0x1d1240, 0x4a1f78, 0x9b3a92, 0xe0567a, 0xff9a4a }, 0xff5a3c, 0x0d0a1a, 0xffc45a, WeatherStars },
+    // 1 - Neon: rainy night
+    { u"Ne\u00f3n", 0x07060d, 0x0f0c1c, 0x090813, 0x9fe8ff, 0xe6e2ff, 0x8e89b5, 0x5e5a86, 0xff2fa3, 0xff7bc8, 0x21d4fd, 0x9d5cff,
+      { 0x05030f, 0x150736, 0x3a0d6b, 0x8a1a8f, 0xff2fa3 }, 0x21d4fd, 0x05040c, 0x21d4fd, WeatherRain },
+    // 2 - 1-bit: peach and navy, like an old monochrome game
+    { u"1-bit", 0x1c2036, 0x2a3050, 0x222741, 0xf2c9a0, 0xf2c9a0, 0xb39a86, 0x7d7284, 0xf2c9a0, 0xffe0bf, 0xd9433f, 0x8f98c0,
+      { 0x232842, 0x4a4560, 0x8a7378, 0xc99b8c, 0xf2c9a0 }, 0xd9433f, 0x232842, 0xf2c9a0, WeatherStars },
+    // 3 - Sakura: pink dusk with falling petals
+    { u"Sakura", 0x150c16, 0x24121f, 0x1a0d18, 0xffd6e4, 0xffe4ee, 0xc9a0b3, 0x8a6478, 0xff7aa8, 0xffa8c6, 0xffc2d6, 0xc96bd0,
+      { 0x1a0d2e, 0x3d1450, 0x7a2860, 0xc05078, 0xffa0a8 }, 0xffd0dc, 0x120813, 0xffd27a, WeatherPetals },
+    // 4 - Niebla: misty teal morning
+    { u"Niebla", 0x0f181d, 0x18252c, 0x121d23, 0xcfe3e8, 0xe0edf0, 0x94adb5, 0x5f7780, 0xe8a08a, 0xffc4b0, 0x6fb3c0, 0x8a9fd0,
+      { 0x1b2c36, 0x2c4551, 0x4f6d7b, 0x86a3ae, 0xc9d8dc }, 0xf3e3d0, 0x0e161b, 0xf0d9a8, WeatherMist },
+};
+constexpr int kPaletteCount = static_cast<int>(sizeof(kPalettes) / sizeof(kPalettes[0]));
+
+// ---------------------------------------------------------------------------------------------
+// Live theme: chosen style, optional accent hue, wallpapers. Persisted next to the launcher data.
 // ---------------------------------------------------------------------------------------------
 struct DashTheme {
-    int hue = 160;  // emerald
-    bool amoled = false;
-    int dim = 55;
-    QString wallpaper;                        // file name inside the backgrounds folder
+    int preset = 0;
+    int hueOverride = -1;  // -1 = use the style's own accent
+    int dim = 45;
+    bool pixel = false;    // pixelate the user's wallpaper
+    bool animate = true;   // animate the built-in scene
+    QString wallpaper;                           // file name inside the backgrounds folder
     QHash<QString, QString> instanceWallpapers;  // instance id -> file name
 
-    QColor accent() const { return QColor::fromHslF(hue / 360.0, 0.84, 0.39); }
-    QColor accentLight() const { return QColor::fromHslF(hue / 360.0, 0.66, 0.52); }
-    QColor accentText() const { return QColor::fromHslF(hue / 360.0, 0.72, 0.70); }
-    QColor accentDark() const { return QColor::fromHslF(hue / 360.0, 0.58, 0.13); }
-    QColor accentDark2() const { return QColor::fromHslF(hue / 360.0, 0.55, 0.115); }
-    QColor bg() const { return amoled ? QColor(0, 0, 0) : QColor(0x0c, 0x0c, 0x10); }
-    QColor panelTop() const { return amoled ? QColor(0x0b, 0x0b, 0x0d) : QColor(0x18, 0x18, 0x1e); }
-    QColor panelBottom() const { return amoled ? QColor(0x04, 0x04, 0x05) : QColor(0x10, 0x10, 0x15); }
+    const Palette& pal() const { return kPalettes[qBound(0, preset, kPaletteCount - 1)]; }
+
+    QColor withHue(const QColor& c) const
+    {
+        if (hueOverride < 0) {
+            return c;
+        }
+        return QColor::fromHslF(hueOverride / 360.0, c.hslSaturationF(), c.lightnessF());
+    }
+
+    QColor accent() const { return withHue(QColor(pal().accent)); }
+    QColor accentLight() const { return withHue(QColor(pal().accentLight)); }
+    QColor accentDark() const
+    {
+        const QColor a = accent();
+        return QColor::fromHslF(a.hslHueF() < 0 ? 0 : a.hslHueF(), a.hslSaturationF() * 0.6, 0.14);
+    }
+    QColor secondary() const { return QColor(pal().secondary); }
+    QColor tertiary() const { return QColor(pal().tertiary); }
+    QColor bg() const { return QColor(pal().bg); }
+    QColor panelTop() const { return QColor(pal().panelTop); }
+    QColor panelBottom() const { return QColor(pal().panelBottom); }
+    QColor ink() const { return QColor(pal().ink); }
+    QColor text() const { return QColor(pal().text); }
+    QColor muted() const { return QColor(pal().muted); }
+    QColor dimText() const { return QColor(pal().dim); }
+    QColor onAccent() const { return bg(); }
 
     static QString rgb(const QColor& c) { return QStringLiteral("%1, %2, %3").arg(c.red()).arg(c.green()).arg(c.blue()); }
 
@@ -132,9 +186,11 @@ struct DashTheme {
             return;
         }
         const QJsonObject obj = QJsonDocument::fromJson(file.readAll()).object();
-        hue = qBound(0, obj.value(QStringLiteral("hue")).toInt(hue), 359);
-        amoled = obj.value(QStringLiteral("amoled")).toBool(amoled);
+        preset = qBound(0, obj.value(QStringLiteral("preset")).toInt(preset), kPaletteCount - 1);
+        hueOverride = qBound(-1, obj.value(QStringLiteral("hueOverride")).toInt(hueOverride), 359);
         dim = qBound(0, obj.value(QStringLiteral("dim")).toInt(dim), 90);
+        pixel = obj.value(QStringLiteral("pixel")).toBool(pixel);
+        animate = obj.value(QStringLiteral("animate")).toBool(animate);
         wallpaper = obj.value(QStringLiteral("wallpaper")).toString();
         instanceWallpapers.clear();
         const QJsonObject perInstance = obj.value(QStringLiteral("instanceWallpapers")).toObject();
@@ -146,9 +202,11 @@ struct DashTheme {
     void save() const
     {
         QJsonObject obj;
-        obj.insert(QStringLiteral("hue"), hue);
-        obj.insert(QStringLiteral("amoled"), amoled);
+        obj.insert(QStringLiteral("preset"), preset);
+        obj.insert(QStringLiteral("hueOverride"), hueOverride);
         obj.insert(QStringLiteral("dim"), dim);
+        obj.insert(QStringLiteral("pixel"), pixel);
+        obj.insert(QStringLiteral("animate"), animate);
         obj.insert(QStringLiteral("wallpaper"), wallpaper);
         QJsonObject perInstance;
         for (auto it = instanceWallpapers.constBegin(); it != instanceWallpapers.constEnd(); ++it) {
@@ -171,115 +229,97 @@ DashTheme& theme()
 }
 
 const char* const kStyleTemplate = R"QSS(
+* { font-family: "Cascadia Mono", "Consolas", "Lucida Console", "DejaVu Sans Mono", monospace; }
 #dashRoot { background-color: @BG@; }
-#sidebar, #rightPanel {
-    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 @PT@, stop:1 @PB@);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 22px;
-}
-#heroCard {
-    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(255, 255, 255, 0.085), stop:1 rgba(255, 255, 255, 0.03));
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 28px;
-}
-#card {
-    background-color: rgba(255, 255, 255, 0.035);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 18px;
-}
-QLabel { background: transparent; color: #d4d4d8; }
-#heroName { color: #ffffff; font-size: 24px; font-weight: 600; }
-#heroSub { color: #a1a1aa; font-size: 12px; }
-#cardTitle { color: #a1a1aa; font-size: 12px; font-weight: 600; }
-#sectionTitle { color: #71717a; font-size: 11px; font-weight: 600; }
-#statusText { color: #a1a1aa; font-size: 11px; }
-#playtime { color: #71717a; font-size: 11px; }
+QLabel { background: transparent; color: @TEXT@; }
+#heroName { color: @TEXT@; font-size: 22px; font-weight: bold; }
+#heroSub { color: @MUTED@; font-size: 12px; }
+#cardTitle { color: @MUTED@; font-size: 11px; font-weight: bold; }
+#sectionTitle { color: @DIM@; font-size: 10px; font-weight: bold; }
+#statusText { color: @MUTED@; font-size: 11px; }
+#playtime { color: @DIM@; font-size: 11px; }
 #chip {
-    background-color: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 11px;
-    padding: 4px 10px;
-    color: #d4d4d8;
+    background-color: rgba(@INK@, 0.07);
+    border: 1px solid rgba(@INK@, 0.32);
+    border-radius: 0px;
+    padding: 3px 8px;
+    color: @TEXT@;
     font-size: 11px;
 }
 #badge {
-    background-color: rgba(@A@, 0.18);
-    border: 1px solid rgba(@AL@, 0.25);
-    border-radius: 9px;
-    padding: 2px 9px;
-    color: @AT@;
-    font-size: 11px;
-    font-weight: 600;
+    background-color: @ACC@;
+    border: 1px solid @ACCL@;
+    border-radius: 0px;
+    padding: 1px 7px;
+    color: @BG@;
+    font-size: 10px;
+    font-weight: bold;
 }
 #accBadge {
-    background-color: rgba(@A@, 0.14);
-    border: 1px solid rgba(@AL@, 0.55);
-    border-radius: 13px;
-    color: @AT@;
+    background-color: rgba(@A@, 0.16);
+    border: 2px solid @ACC@;
+    border-radius: 0px;
+    color: @ACCL@;
     font-size: 11px;
-    font-weight: 600;
-    min-width: 26px;
-    max-width: 26px;
-    min-height: 26px;
-    max-height: 26px;
+    font-weight: bold;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
 }
-#divider { background-color: rgba(255, 255, 255, 0.07); border: none; min-height: 1px; max-height: 1px; }
+#divider { background: transparent; border: none; border-top: 1px dashed rgba(@INK@, 0.38); min-height: 1px; max-height: 1px; }
 QProgressBar {
-    background-color: rgba(0, 0, 0, 0.45);
-    border: none;
-    border-radius: 3px;
-    min-height: 6px;
-    max-height: 6px;
+    background-color: rgba(0, 0, 0, 0.55);
+    border: 1px solid rgba(@INK@, 0.40);
+    border-radius: 0px;
+    min-height: 8px;
+    max-height: 8px;
     text-align: center;
     color: transparent;
 }
-QProgressBar::chunk {
-    border-radius: 3px;
-    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 @ACC@, stop:1 @ACCL@);
-}
-QSlider::groove:horizontal { height: 6px; border-radius: 3px; background-color: rgba(255, 255, 255, 0.14); }
-QSlider::sub-page:horizontal { border-radius: 3px; background-color: @ACCL@; }
+QProgressBar::chunk { background-color: @ACC@; }
+QSlider::groove:horizontal { height: 6px; border: 1px solid rgba(@INK@, 0.35); background-color: rgba(@INK@, 0.12); }
+QSlider::sub-page:horizontal { background-color: @ACC@; }
 QSlider::handle:horizontal {
-    width: 14px; height: 14px; margin: -5px 0; border-radius: 8px;
-    background-color: #121217; border: 2px solid #ffffff;
+    width: 10px; height: 10px; margin: -5px 0;
+    background-color: @BG@; border: 2px solid @INK_HEX@;
 }
-QSlider::handle:horizontal:hover { border-color: @AT@; }
-#hueSlider::groove:horizontal { height: 10px; border-radius: 5px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, @HUES@); }
+QSlider::handle:horizontal:hover { border-color: @ACCL@; }
+#hueSlider::groove:horizontal { height: 8px; border: 1px solid rgba(@INK@, 0.35); background: qlineargradient(x1:0, y1:0, x2:1, y2:0, @HUES@); }
 #hueSlider::sub-page:horizontal { background: transparent; }
 #hueSlider::add-page:horizontal { background: transparent; }
-#hueSlider::handle:horizontal { width: 14px; height: 14px; margin: -4px 0; border-radius: 8px; background-color: #121217; border: 2px solid #ffffff; }
+#hueSlider::handle:horizontal { width: 8px; height: 16px; margin: -5px 0; background-color: @BG@; border: 2px solid @INK_HEX@; }
 QListView { background: transparent; border: none; outline: none; }
 QScrollBar:vertical { background: transparent; width: 6px; margin: 0; }
-QScrollBar::handle:vertical { background: rgba(255, 255, 255, 0.16); border-radius: 3px; min-height: 28px; }
-QScrollBar::handle:vertical:hover { background: rgba(@AL@, 0.55); }
+QScrollBar::handle:vertical { background: rgba(@INK@, 0.28); min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: @ACC@; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-QToolTip {
-    background-color: #20202a; color: #e4e4e7;
-    border: 1px solid rgba(255, 255, 255, 0.16); padding: 4px 8px;
-}
-QMenu { background-color: #15151b; color: #e4e4e7; border: 1px solid rgba(255, 255, 255, 0.14); padding: 4px; }
-QMenu::item { padding: 6px 26px 6px 12px; border-radius: 6px; }
-QMenu::item:selected { background-color: rgba(@A@, 0.25); color: #ffffff; }
-QMenu::separator { height: 1px; background: rgba(255, 255, 255, 0.08); margin: 4px 8px; }
+QToolTip { background-color: @PT@; color: @TEXT@; border: 1px solid @INK_HEX@; padding: 4px 8px; }
+QMenu { background-color: @PT@; color: @TEXT@; border: 2px solid rgba(@INK@, 0.55); padding: 3px; }
+QMenu::item { padding: 6px 26px 6px 12px; }
+QMenu::item:selected { background-color: @ACC@; color: @BG@; }
+QMenu::separator { height: 1px; background: rgba(@INK@, 0.25); margin: 4px 8px; }
 )QSS";
 
 QString DashTheme::styleSheet() const
 {
     QString hues;
     for (int i = 0; i <= 6; ++i) {
-        const QColor c = QColor::fromHslF(qMin(i * 60, 359) / 360.0, 0.75, 0.52);
+        const QColor c = QColor::fromHslF(qMin(i * 60, 359) / 360.0, 0.75, 0.55);
         if (!hues.isEmpty()) {
             hues += QStringLiteral(", ");
         }
         hues += QStringLiteral("stop:%1 %2").arg(i / 6.0, 0, 'f', 3).arg(c.name());
     }
     QString css = QString::fromLatin1(kStyleTemplate);
+    css.replace(QStringLiteral("@INK_HEX@"), ink().name());
+    css.replace(QStringLiteral("@INK@"), rgb(ink()));
     css.replace(QStringLiteral("@BG@"), bg().name());
     css.replace(QStringLiteral("@PT@"), panelTop().name());
-    css.replace(QStringLiteral("@PB@"), panelBottom().name());
-    css.replace(QStringLiteral("@AL@"), rgb(accentLight()));
-    css.replace(QStringLiteral("@AT@"), accentText().name());
+    css.replace(QStringLiteral("@TEXT@"), text().name());
+    css.replace(QStringLiteral("@MUTED@"), muted().name());
+    css.replace(QStringLiteral("@DIM@"), dimText().name());
     css.replace(QStringLiteral("@ACCL@"), accentLight().name());
     css.replace(QStringLiteral("@ACC@"), accent().name());
     css.replace(QStringLiteral("@A@"), rgb(accent()));
@@ -288,7 +328,37 @@ QString DashTheme::styleSheet() const
 }
 
 // ---------------------------------------------------------------------------------------------
-// Vector glyphs, drawn on a 24x24 grid (no image resources needed)
+// Pixel-art boxes: hard edges, one-step stair corners and optional hard shadows
+// ---------------------------------------------------------------------------------------------
+QPolygonF notchPoly(const QRectF& r, qreal n, qreal borderWidth)
+{
+    const qreal l = r.left() + borderWidth / 2;
+    const qreal t = r.top() + borderWidth / 2;
+    const qreal rr = r.right() - borderWidth / 2;
+    const qreal b = r.bottom() - borderWidth / 2;
+    QPolygonF poly;
+    poly << QPointF(l + n, t) << QPointF(rr - n, t) << QPointF(rr - n, t + n) << QPointF(rr, t + n) << QPointF(rr, b - n)
+         << QPointF(rr - n, b - n) << QPointF(rr - n, b) << QPointF(l + n, b) << QPointF(l + n, b - n) << QPointF(l, b - n)
+         << QPointF(l, t + n) << QPointF(l + n, t + n);
+    return poly;
+}
+
+void drawPixelBox(QPainter& p, const QRectF& r, qreal notch, const QBrush& fill, const QColor& border, qreal borderWidth)
+{
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.setBrush(fill);
+    if (borderWidth > 0 && border.alpha() > 0) {
+        p.setPen(QPen(border, borderWidth, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+    } else {
+        p.setPen(Qt::NoPen);
+    }
+    p.drawPolygon(notchPoly(r, notch, borderWidth > 0 ? borderWidth : 0));
+    p.restore();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Vector glyphs, drawn on a 24x24 grid (no image resources needed). Square caps = "technical" look.
 // ---------------------------------------------------------------------------------------------
 enum class Glyph {
     None,
@@ -307,7 +377,8 @@ enum class Glyph {
     Plus,
     Pencil,
     Dots,
-    Palette
+    Palette,
+    Torii
 };
 
 void drawGlyph(QPainter& p, Glyph glyph, const QRectF& target, const QColor& color)
@@ -321,7 +392,7 @@ void drawGlyph(QPainter& p, Glyph glyph, const QRectF& target, const QColor& col
     p.translate(target.center());
     p.scale(scale, scale);
     p.translate(-12.0, -12.0);
-    p.setPen(QPen(color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setPen(QPen(color, 2.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
     p.setBrush(Qt::NoBrush);
 
     switch (glyph) {
@@ -330,7 +401,7 @@ void drawGlyph(QPainter& p, Glyph glyph, const QRectF& target, const QColor& col
         case Glyph::Grid:
             for (int row = 0; row < 2; ++row) {
                 for (int col = 0; col < 2; ++col) {
-                    p.drawRoundedRect(QRectF(4 + col * 10, 4 + row * 10, 6, 6), 1.6, 1.6);
+                    p.drawRect(QRectF(4 + col * 9.5, 4 + row * 9.5, 6.5, 6.5));
                 }
             }
             break;
@@ -347,7 +418,7 @@ void drawGlyph(QPainter& p, Glyph glyph, const QRectF& target, const QColor& col
         }
         case Glyph::Puzzle: {
             QPainterPath body;
-            body.addRoundedRect(QRectF(4, 9, 12, 11), 2, 2);
+            body.addRect(QRectF(4, 9, 12, 11));
             QPainterPath knobTop;
             knobTop.addEllipse(QPointF(10, 7.2), 2.6, 2.6);
             QPainterPath knobSide;
@@ -366,26 +437,26 @@ void drawGlyph(QPainter& p, Glyph glyph, const QRectF& target, const QColor& col
             break;
         }
         case Glyph::Sun:
-            p.drawEllipse(QPointF(12, 12), 4.0, 4.0);
+            p.drawRect(QRectF(8.5, 8.5, 7, 7));
             for (int i = 0; i < 8; ++i) {
                 const qreal a = qDegreesToRadians(i * 45.0);
-                p.drawLine(QPointF(12 + qCos(a) * 7.2, 12 + qSin(a) * 7.2), QPointF(12 + qCos(a) * 9.6, 12 + qSin(a) * 9.6));
+                p.drawLine(QPointF(12 + qCos(a) * 8.0, 12 + qSin(a) * 8.0), QPointF(12 + qCos(a) * 10.2, 12 + qSin(a) * 10.2));
             }
             break;
         case Glyph::Image: {
-            p.drawRoundedRect(QRectF(3.5, 4.5, 17, 15), 2.2, 2.2);
-            p.drawEllipse(QPointF(9, 10), 1.6, 1.6);
+            p.drawRect(QRectF(3.5, 4.5, 17, 15));
+            p.drawRect(QRectF(7.5, 8, 2.5, 2.5));
             QPolygonF hills;
             hills << QPointF(3.5, 17) << QPointF(9, 12.5) << QPointF(14, 16.5) << QPointF(16.5, 14.5) << QPointF(20.5, 18);
             p.drawPolyline(hills);
             break;
         }
         case Glyph::Camera: {
-            p.drawRoundedRect(QRectF(3, 7.5, 18, 12), 2.4, 2.4);
+            p.drawRect(QRectF(3, 7.5, 18, 12));
             QPolygonF hump;
             hump << QPointF(8.5, 7.5) << QPointF(10, 4.8) << QPointF(14, 4.8) << QPointF(15.5, 7.5);
             p.drawPolyline(hump);
-            p.drawEllipse(QPointF(12, 13.5), 3.4, 3.4);
+            p.drawRect(QRectF(9.2, 10.7, 5.6, 5.6));
             break;
         }
         case Glyph::Globe:
@@ -394,7 +465,7 @@ void drawGlyph(QPainter& p, Glyph glyph, const QRectF& target, const QColor& col
             p.drawLine(QPointF(3, 12), QPointF(21, 12));
             break;
         case Glyph::Terminal: {
-            p.drawRoundedRect(QRectF(3, 4.5, 18, 15), 2.2, 2.2);
+            p.drawRect(QRectF(3, 4.5, 18, 15));
             QPolygonF chevron;
             chevron << QPointF(7, 9.5) << QPointF(10.5, 12) << QPointF(7, 14.5);
             p.drawPolyline(chevron);
@@ -402,11 +473,11 @@ void drawGlyph(QPainter& p, Glyph glyph, const QRectF& target, const QColor& col
             break;
         }
         case Glyph::Gear:
-            p.drawEllipse(QPointF(12, 12), 3.2, 3.2);
-            p.drawEllipse(QPointF(12, 12), 6.6, 6.6);
-            for (int i = 0; i < 8; ++i) {
-                const qreal a = qDegreesToRadians(i * 45.0);
-                p.drawLine(QPointF(12 + qCos(a) * 6.6, 12 + qSin(a) * 6.6), QPointF(12 + qCos(a) * 9.2, 12 + qSin(a) * 9.2));
+            p.drawEllipse(QPointF(12, 12), 3.0, 3.0);
+            p.drawRect(QRectF(6.5, 6.5, 11, 11));
+            for (int i = 0; i < 4; ++i) {
+                const qreal a = qDegreesToRadians(i * 90.0);
+                p.drawLine(QPointF(12 + qCos(a) * 7.5, 12 + qSin(a) * 7.5), QPointF(12 + qCos(a) * 10.5, 12 + qSin(a) * 10.5));
             }
             break;
         case Glyph::Play: {
@@ -418,7 +489,7 @@ void drawGlyph(QPainter& p, Glyph glyph, const QRectF& target, const QColor& col
         }
         case Glyph::Stop:
             p.setBrush(color);
-            p.drawRoundedRect(QRectF(6.5, 6.5, 11, 11), 2.2, 2.2);
+            p.drawRect(QRectF(6.5, 6.5, 11, 11));
             break;
         case Glyph::Plus:
             p.drawLine(QPointF(12, 5), QPointF(12, 19));
@@ -434,18 +505,27 @@ void drawGlyph(QPainter& p, Glyph glyph, const QRectF& target, const QColor& col
         case Glyph::Dots:
             p.setPen(Qt::NoPen);
             p.setBrush(color);
-            p.drawEllipse(QPointF(5.5, 12), 1.9, 1.9);
-            p.drawEllipse(QPointF(12, 12), 1.9, 1.9);
-            p.drawEllipse(QPointF(18.5, 12), 1.9, 1.9);
+            p.drawRect(QRectF(3.5, 10.5, 3.5, 3.5));
+            p.drawRect(QRectF(10.25, 10.5, 3.5, 3.5));
+            p.drawRect(QRectF(17, 10.5, 3.5, 3.5));
             break;
         case Glyph::Palette: {
             p.drawEllipse(QPointF(12, 12), 9, 9);
             p.setPen(Qt::NoPen);
             p.setBrush(color);
-            p.drawEllipse(QPointF(8, 10.5), 1.3, 1.3);
-            p.drawEllipse(QPointF(12, 7.5), 1.3, 1.3);
-            p.drawEllipse(QPointF(16, 10.5), 1.3, 1.3);
-            p.drawEllipse(QPointF(9.2, 15.2), 1.3, 1.3);
+            p.drawRect(QRectF(6.8, 9.3, 2.4, 2.4));
+            p.drawRect(QRectF(10.8, 6.3, 2.4, 2.4));
+            p.drawRect(QRectF(14.8, 9.3, 2.4, 2.4));
+            p.drawRect(QRectF(8, 14, 2.4, 2.4));
+            break;
+        }
+        case Glyph::Torii: {
+            p.setPen(Qt::NoPen);
+            p.setBrush(color);
+            p.drawRect(QRectF(2, 4, 20, 3));      // kasagi (top beam)
+            p.drawRect(QRectF(4.5, 8.6, 15, 2));  // nuki (lower beam)
+            p.drawRect(QRectF(6, 8, 2.4, 13));    // left pillar
+            p.drawRect(QRectF(15.6, 8, 2.4, 13)); // right pillar
             break;
         }
     }
@@ -548,8 +628,66 @@ QString describeInstance(BaseInstance* inst)
 }  // namespace
 
 // =============================================================================================
-// Custom painted controls. They are global (not anonymous) because Dashboard.h forward-declares them.
+// Custom painted controls. Some are global (not anonymous) because Dashboard.h forward-declares them.
 // =============================================================================================
+
+class DashFrame : public QFrame {
+   public:
+    enum class Kind { Panel, Card, Hero };
+
+    DashFrame(Kind kind, QWidget* parent) : QFrame(parent), m_kind(kind) {}
+    void setTitle(const QString& title)
+    {
+        m_title = title;
+        update();
+    }
+
+   protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        const DashTheme& t = theme();
+        QPainter p(this);
+        const QRectF r(rect());
+        switch (m_kind) {
+            case Kind::Panel: {
+                QLinearGradient g(r.topLeft(), r.bottomLeft());
+                g.setColorAt(0, t.panelTop());
+                g.setColorAt(1, t.panelBottom());
+                drawPixelBox(p, r, 6, QBrush(g), withAlpha(t.ink(), 80), 2);
+                break;
+            }
+            case Kind::Card:
+                drawPixelBox(p, r, 4, withAlpha(t.ink(), 10), withAlpha(t.ink(), 75), 1);
+                break;
+            case Kind::Hero: {
+                const QRectF box(0, 0, r.width() - 5, r.height() - 5);
+                drawPixelBox(p, box.translated(5, 5), 6, QColor(0, 0, 0, 150), QColor(), 0);
+                QLinearGradient g(box.topLeft(), box.bottomLeft());
+                g.setColorAt(0, withAlpha(t.panelTop(), 238));
+                g.setColorAt(1, withAlpha(t.panelBottom(), 238));
+                drawPixelBox(p, box, 6, QBrush(g), withAlpha(t.ink(), 225), 2);
+                // inverted title bar, like the boxed dialogs of old monochrome games
+                p.save();
+                QPainterPath clip;
+                clip.addPolygon(notchPoly(box, 6, 0));
+                p.setClipPath(clip);
+                p.fillRect(QRectF(0, 0, box.width(), 24), t.ink());
+                p.restore();
+                p.setPen(t.bg());
+                p.setFont(monoFont(11, true));
+                p.drawText(QRectF(12, 0, box.width() - 80, 24), Qt::AlignVCenter | Qt::AlignLeft, m_title);
+                for (int i = 0; i < 3; ++i) {
+                    p.fillRect(QRectF(box.width() - 16 - i * 11, 9, 6, 6), t.bg());
+                }
+                break;
+            }
+        }
+    }
+
+   private:
+    Kind m_kind;
+    QString m_title;
+};
 
 class DashButton : public QToolButton {
    public:
@@ -576,7 +714,7 @@ class DashButton : public QToolButton {
                 setFixedSize(28, 28);
                 break;
             case Kind::Play:
-                setFixedSize(300, 54);
+                setFixedSize(304, 60);
                 break;
             case Kind::Bar:
                 setMinimumHeight(48);
@@ -587,11 +725,11 @@ class DashButton : public QToolButton {
                 setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
                 break;
             case Kind::Chip:
-                setFixedHeight(30);
+                setFixedHeight(28);
                 break;
         }
         m_anim = new QVariantAnimation(this);
-        m_anim->setDuration(170);
+        m_anim->setDuration(140);
         m_anim->setEasingCurve(QEasingCurve::OutCubic);
         connect(m_anim, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
             m_hover = value.toReal();
@@ -610,9 +748,9 @@ class DashButton : public QToolButton {
         update();
     }
     void setDiameter(int d) { setFixedSize(d, d); }
-    void setSwatchHue(int hue)
+    void setSwatchIndex(int index)
     {
-        m_swatchHue = hue;
+        m_swatch = index;
         update();
     }
     void setExpandProgress(qreal progress)
@@ -624,8 +762,7 @@ class DashButton : public QToolButton {
     QSize sizeHint() const override
     {
         if (m_kind == Kind::Chip) {
-            const int glyphWidth = m_glyph == Glyph::None ? 0 : 22;
-            return QSize(fontMetrics().horizontalAdvance(text()) + 30 + glyphWidth, 30);
+            return QSize(fontMetrics().horizontalAdvance(text()) + 26, 28);
         }
         return QToolButton::sizeHint();
     }
@@ -650,127 +787,109 @@ class DashButton : public QToolButton {
     {
         const DashTheme& t = theme();
         QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
         p.setOpacity(isEnabled() ? 1.0 : 0.38);
         const qreal h = m_hover;
         const bool down = isDown();
-        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        const QRectF r(rect());
+        const QColor ink = t.ink();
+        const QColor onAccent = t.onAccent();
 
         switch (m_kind) {
             case Kind::Square: {
-                const QColor bg = m_active ? withAlpha(t.accent(), 46) : whiteA(down ? 6 : qRound(10 + 12 * h));
-                const QColor border = m_active ? withAlpha(t.accentLight(), qRound(120 + 40 * h)) : whiteA(qRound(24 + 40 * h));
-                p.setPen(QPen(border, 1));
-                p.setBrush(bg);
-                p.drawRoundedRect(r, 14, 14);
-                const QColor glyphColor = m_active ? t.accentLight() : mixColors(kTextMuted, QColor(255, 255, 255), h);
+                const QColor fill = m_active ? ink : withAlpha(ink, qRound(10 + 26 * h));
+                const QColor border = m_active ? ink : withAlpha(ink, qRound(70 + 150 * h));
+                drawPixelBox(p, r, 5, down ? withAlpha(ink, 6) : fill, border, 2);
                 const qreal g = down ? 18 : 20;
-                drawGlyph(p, m_glyph, QRectF(r.center().x() - g / 2, r.center().y() - g / 2, g, g), glyphColor);
+                drawGlyph(p, m_glyph, QRectF(r.center().x() - g / 2, r.center().y() - g / 2, g, g),
+                          m_active ? onAccent : mixColors(t.muted(), t.text(), h));
                 break;
             }
             case Kind::Round:
             case Kind::Mini: {
-                p.setPen(QPen(m_accented ? withAlpha(t.accentLight(), qRound(150 + 80 * h)) : whiteA(qRound(28 + 40 * h)), 1.2));
-                p.setBrush(m_accented ? withAlpha(t.accent(), down ? 30 : qRound(42 + 30 * h)) : whiteA(down ? 6 : qRound(12 + 12 * h)));
-                p.drawEllipse(r);
+                const bool accented = m_accented;
+                const QColor fill = accented ? mixColors(t.accent(), t.accentLight(), h * 0.6) : withAlpha(ink, qRound(10 + 24 * h));
+                const QColor border = accented ? t.accentLight() : withAlpha(ink, qRound(80 + 140 * h));
+                drawPixelBox(p, r, 4, down ? withAlpha(fill, 160) : fill, border, 2);
                 const qreal g = r.width() * (m_kind == Kind::Mini ? 0.52 : 0.46);
-                drawGlyph(p, m_glyph, QRectF(r.center().x() - g / 2, r.center().y() - g / 2, g, g),
-                          m_accented ? t.accentLight() : mixColors(kText, QColor(255, 255, 255), h));
+                drawGlyph(p, m_glyph, QRectF(r.center().x() - g / 2, r.center().y() - g / 2, g, g), accented ? onAccent : mixColors(t.text(), t.accentLight(), h));
                 break;
             }
             case Kind::Play: {
-                QLinearGradient g(r.topLeft(), r.topRight());
-                g.setColorAt(0, mixColors(t.accentDark(), t.accent(), 0.10 + 0.25 * h));
-                g.setColorAt(1, mixColors(t.accentDark2(), t.accent(), 0.06 + 0.20 * h));
-                p.setPen(QPen(withAlpha(t.accentLight(), down ? 130 : qRound(150 + 80 * h)), 1.2));
-                p.setBrush(g);
-                p.drawRoundedRect(r, 20, 20);
-                QFont f = font();
-                f.setBold(true);
+                const QRectF box(0, 0, r.width() - 5, r.height() - 5);
+                const QRectF top = down ? box.translated(4, 4) : box.translated(-h * 1.0, -h * 1.0);
+                if (!down) {
+                    drawPixelBox(p, box.translated(5, 5), 6, QColor(0, 0, 0, 170), QColor(), 0);
+                }
+                drawPixelBox(p, top, 6, mixColors(t.accent(), t.accentLight(), h * 0.7), withAlpha(ink, 235), 2);
+                QFont f = monoFont(15, true);
                 p.setFont(f);
-                const int textWidth = QFontMetrics(f).horizontalAdvance(text());
+                const QString label = text().toUpper();
+                const int textWidth = QFontMetrics(f).horizontalAdvance(label);
                 const qreal total = 20 + 12 + textWidth;
-                const qreal x = r.center().x() - total / 2;
-                drawGlyph(p, Glyph::Play, QRectF(x, r.center().y() - 10, 20, 20), QColor(0xf0, 0xfd, 0xf6));
-                p.setPen(QColor(0xf0, 0xfd, 0xf6));
-                p.drawText(QRectF(x + 32, r.top(), textWidth + 4, r.height()), Qt::AlignVCenter | Qt::AlignLeft, text());
+                const qreal x = top.center().x() - total / 2;
+                drawGlyph(p, Glyph::Play, QRectF(x, top.center().y() - 10, 20, 20), onAccent);
+                p.setPen(onAccent);
+                p.drawText(QRectF(x + 32, top.top(), textWidth + 6, top.height()), Qt::AlignVCenter | Qt::AlignLeft, label);
                 break;
             }
             case Kind::Bar: {
-                p.setPen(QPen(whiteA(qRound(26 + 30 * h)), 1));
-                p.setBrush(whiteA(down ? 6 : qRound(9 + 9 * h)));
-                p.drawRoundedRect(r, 15, 15);
+                drawPixelBox(p, r, 5, down ? withAlpha(ink, 6) : withAlpha(ink, qRound(9 + 14 * h)), withAlpha(ink, qRound(70 + 130 * h)), 2);
                 const QRectF badge(r.left() + 10, r.center().y() - 14, 28, 28);
-                p.setPen(QPen(withAlpha(t.accentLight(), 150), 1.2));
-                p.setBrush(withAlpha(t.accent(), 36));
-                p.drawEllipse(badge);
-                drawGlyph(p, m_glyph, QRectF(badge.center().x() - 7, badge.center().y() - 7, 14, 14), t.accentLight());
-                p.setPen(mixColors(kText, QColor(255, 255, 255), h));
-                p.drawText(QRectF(r.left() + 50, r.top(), r.width() - 80, r.height()), Qt::AlignVCenter | Qt::AlignLeft, text());
+                drawPixelBox(p, badge, 3, t.accent(), t.accentLight(), 2);
+                drawGlyph(p, m_glyph, QRectF(badge.center().x() - 7, badge.center().y() - 7, 14, 14), onAccent);
+                p.setFont(monoFont(12, true));
+                p.setPen(mixColors(t.text(), t.accentLight(), h));
+                p.drawText(QRectF(r.left() + 50, r.top(), r.width() - 80, r.height()), Qt::AlignVCenter | Qt::AlignLeft, text().toUpper());
                 QPolygonF arrow;
                 const qreal ax = r.right() - 20 + 3 * h;
                 arrow << QPointF(ax - 3, r.center().y() - 5) << QPointF(ax + 3, r.center().y()) << QPointF(ax - 3, r.center().y() + 5);
-                p.setPen(QPen(kTextMuted, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                p.setBrush(Qt::NoBrush);
-                p.drawPolyline(arrow);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                p.setPen(Qt::NoPen);
+                p.setBrush(t.muted());
+                p.drawPolygon(arrow);
                 break;
             }
             case Kind::Chip: {
-                const QColor bg = m_active ? withAlpha(t.accent(), 46) : whiteA(down ? 6 : qRound(8 + 10 * h));
-                const QColor border = m_active ? withAlpha(t.accentLight(), 150) : whiteA(qRound(22 + 30 * h));
-                p.setPen(QPen(border, 1));
-                p.setBrush(bg);
-                p.drawRoundedRect(r, r.height() / 2, r.height() / 2);
-                const int textWidth = fontMetrics().horizontalAdvance(text());
-                const qreal glyphWidth = m_glyph == Glyph::None ? 0 : 20;
-                const qreal x = r.center().x() - (glyphWidth + textWidth) / 2;
-                const QColor content = m_active ? t.accentText() : mixColors(kText, QColor(255, 255, 255), h);
-                if (m_glyph != Glyph::None) {
-                    drawGlyph(p, m_glyph, QRectF(x, r.center().y() - 7, 14, 14), content);
-                }
-                p.setPen(content);
-                p.drawText(QRectF(x + glyphWidth, r.top(), textWidth + 4, r.height()), Qt::AlignVCenter | Qt::AlignLeft, text());
+                const QColor fill = m_active ? t.accent() : withAlpha(ink, qRound(8 + 16 * h));
+                const QColor border = m_active ? t.accentLight() : withAlpha(ink, qRound(70 + 120 * h));
+                drawPixelBox(p, r, 3, down ? withAlpha(ink, 6) : fill, border, 1);
+                p.setFont(monoFont(11, m_active));
+                p.setPen(m_active ? onAccent : mixColors(t.text(), t.accentLight(), h));
+                p.drawText(r, Qt::AlignCenter, text());
                 break;
             }
             case Kind::Header: {
                 if (h > 0.01) {
-                    p.setPen(Qt::NoPen);
-                    p.setBrush(whiteA(qRound(8 * h)));
-                    p.drawRoundedRect(r, 16, 16);
+                    drawPixelBox(p, r, 4, withAlpha(ink, qRound(10 * h)), QColor(), 0);
                 }
                 const QRectF badge(r.left() + 12, r.center().y() - 14, 28, 28);
-                p.setPen(QPen(withAlpha(t.accentLight(), 150), 1.2));
-                p.setBrush(withAlpha(t.accent(), 36));
-                p.drawEllipse(badge);
-                drawGlyph(p, m_glyph, QRectF(badge.center().x() - 8, badge.center().y() - 8, 16, 16), t.accentLight());
-                QFont f = font();
-                f.setBold(true);
-                p.setFont(f);
-                p.setPen(mixColors(kText, QColor(255, 255, 255), h));
-                p.drawText(QRectF(r.left() + 52, r.top(), r.width() - 90, r.height()), Qt::AlignVCenter | Qt::AlignLeft, text());
+                drawPixelBox(p, badge, 3, t.accent(), t.accentLight(), 2);
+                drawGlyph(p, m_glyph, QRectF(badge.center().x() - 8, badge.center().y() - 8, 16, 16), onAccent);
+                p.setFont(monoFont(12, true));
+                p.setPen(mixColors(t.text(), t.accentLight(), h));
+                p.drawText(QRectF(r.left() + 52, r.top(), r.width() - 90, r.height()), Qt::AlignVCenter | Qt::AlignLeft, text().toUpper());
                 p.save();
+                p.setRenderHint(QPainter::Antialiasing, true);
                 p.translate(r.right() - 22, r.center().y());
                 p.rotate(180.0 * m_expand);
-                p.setPen(QPen(kTextMuted, 1.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                QPolygonF chevron;
-                chevron << QPointF(-4.5, -2) << QPointF(0, 2.5) << QPointF(4.5, -2);
-                p.drawPolyline(chevron);
+                QPolygonF tri;
+                tri << QPointF(-5, -3) << QPointF(5, -3) << QPointF(0, 3);
+                p.setPen(Qt::NoPen);
+                p.setBrush(t.muted());
+                p.drawPolygon(tri);
                 p.restore();
                 break;
             }
             case Kind::Swatch: {
-                const QColor color = QColor::fromHslF(m_swatchHue / 360.0, 0.84, 0.42);
-                const bool current = qAbs(t.hue - m_swatchHue) <= 4;
-                const qreal grow = 1.5 * h;
-                const QRectF dot = r.adjusted(4 - grow, 4 - grow, -4 + grow, -4 + grow);
+                const auto& pal = kPalettes[qBound(0, m_swatch, kPaletteCount - 1)];
+                const bool current = theme().preset == m_swatch;
+                const QRectF box = r.adjusted(3 - h * 1.5, 3 - h * 1.5, -3 + h * 1.5, -3 + h * 1.5);
                 if (current) {
-                    p.setPen(QPen(QColor(255, 255, 255, 230), 1.6));
-                    p.setBrush(Qt::NoBrush);
-                    p.drawEllipse(r.adjusted(0.5, 0.5, -0.5, -0.5));
+                    drawPixelBox(p, r.adjusted(1, 1, -1, -1), 3, QColor(), t.text(), 2);
                 }
-                p.setPen(Qt::NoPen);
-                p.setBrush(color);
-                p.drawEllipse(dot);
+                // two-tone chip: accent over background, so the style is recognisable at a glance
+                drawPixelBox(p, box, 2, QColor(pal.bg), QColor(pal.ink), 1);
+                p.fillRect(QRectF(box.left() + 2, box.top() + 2, box.width() - 4, (box.height() - 4) / 2 + 1), QColor(pal.accent));
                 break;
             }
         }
@@ -791,7 +910,7 @@ class DashButton : public QToolButton {
     bool m_accented = false;
     qreal m_hover = 0.0;
     qreal m_expand = 0.0;
-    int m_swatchHue = 160;
+    int m_swatch = 0;
     QVariantAnimation* m_anim = nullptr;
 };
 
@@ -801,9 +920,9 @@ class DashSwitch : public QAbstractButton {
     {
         setCheckable(true);
         setCursor(Qt::PointingHandCursor);
-        setFixedSize(46, 26);
+        setFixedSize(46, 24);
         m_anim = new QVariantAnimation(this);
-        m_anim->setDuration(160);
+        m_anim->setDuration(150);
         m_anim->setEasingCurve(QEasingCurve::OutCubic);
         connect(m_anim, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
             m_pos = value.toReal();
@@ -816,23 +935,18 @@ class DashSwitch : public QAbstractButton {
             m_anim->start();
         });
     }
-    QSize sizeHint() const override { return QSize(46, 26); }
+    QSize sizeHint() const override { return QSize(46, 24); }
 
    protected:
     void paintEvent(QPaintEvent*) override
     {
         const DashTheme& t = theme();
         QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-        p.setPen(QPen(mixColors(whiteA(48), withAlpha(t.accentLight(), 210), m_pos), 1.2));
-        p.setBrush(mixColors(whiteA(14), t.accentDark(), m_pos));
-        p.drawRoundedRect(r, r.height() / 2, r.height() / 2);
-        const qreal d = r.height() - 8;
-        const qreal x = r.left() + 4 + (r.width() - d - 8) * m_pos;
-        p.setPen(Qt::NoPen);
-        p.setBrush(mixColors(kTextMuted, QColor(0xf0, 0xfd, 0xf6), m_pos));
-        p.drawEllipse(QRectF(x, r.top() + 4, d, d));
+        const QRectF r(rect());
+        drawPixelBox(p, r, 3, mixColors(withAlpha(t.ink(), 14), t.accent(), m_pos), mixColors(withAlpha(t.ink(), 110), t.accentLight(), m_pos), 2);
+        const qreal d = r.height() - 10;
+        const qreal x = r.left() + 5 + (r.width() - d - 10) * m_pos;
+        p.fillRect(QRectF(qRound(x), r.top() + 5, d, d), mixColors(t.muted(), t.onAccent(), m_pos));
     }
 
    private:
@@ -882,45 +996,41 @@ class DashAvatars : public QWidget {
     {
         const DashTheme& t = theme();
         QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        const qreal d = 36;
+        const qreal d = 34;
         const qreal step = 26;
         const qreal top = (height() - d) / 2;
         const int count = static_cast<int>(m_faces.size());
 
         for (int i = count - 1; i >= 0; --i) {
             const QRectF box(2 + i * step, top, d, d);
-            p.setPen(Qt::NoPen);
-            p.setBrush(t.panelBottom());
-            p.drawEllipse(box.adjusted(-2, -2, 2, 2));
-            p.setBrush(QColor(0x26, 0x26, 0x2e));
-            p.drawEllipse(box);
+            const bool isDefault = i == m_defaultIndex;
+            drawPixelBox(p, box.adjusted(-2, -2, 2, 2), 3, t.panelBottom(), QColor(), 0);
+            drawPixelBox(p, box, 3, QColor(0x26, 0x26, 0x2e), isDefault ? t.accentLight() : withAlpha(t.ink(), 120), 2);
             if (!m_faces[i].isNull()) {
                 p.save();
-                QPainterPath clip;
-                clip.addEllipse(box.adjusted(1, 1, -1, -1));
-                p.setClipPath(clip);
-                p.drawPixmap(box.adjusted(1, 1, -1, -1).toRect(), m_faces[i]);
+                p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+                p.drawPixmap(box.adjusted(3, 3, -3, -3).toRect(), m_faces[i]);
                 p.restore();
             } else if (!m_names[i].isEmpty()) {
-                p.setPen(kText);
+                p.setFont(monoFont(14, true));
+                p.setPen(t.text());
                 p.drawText(box, Qt::AlignCenter, m_names[i].left(1).toUpper());
             }
-            p.setBrush(Qt::NoBrush);
-            p.setPen(QPen(i == m_defaultIndex ? t.accentLight() : whiteA(50), i == m_defaultIndex ? 2.0 : 1.2));
-            p.drawEllipse(box);
         }
 
         const QRectF plus(2 + count * step + (count > 0 ? 6 : 0), top, d, d);
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, false);
         p.setBrush(Qt::NoBrush);
-        p.setPen(QPen(whiteA(85), 1.2, Qt::DashLine));
-        p.drawEllipse(plus);
-        drawGlyph(p, Glyph::Plus, QRectF(plus.center().x() - 8, plus.center().y() - 8, 16, 16), kTextMuted);
+        p.setPen(QPen(withAlpha(t.ink(), 130), 1, Qt::DashLine));
+        p.drawRect(plus.adjusted(0.5, 0.5, -0.5, -0.5));
+        p.restore();
+        drawGlyph(p, Glyph::Plus, QRectF(plus.center().x() - 8, plus.center().y() - 8, 16, 16), t.muted());
         if (count == 0) {
-            p.setPen(kTextMuted);
+            p.setFont(monoFont(11, false));
+            p.setPen(t.muted());
             p.drawText(QRectF(plus.right() + 10, top, width() - plus.right() - 10, d), Qt::AlignVCenter | Qt::AlignLeft,
-                       QStringLiteral(u"A\u00f1adir cuenta"));
+                       QStringLiteral(u"A\u00d1ADIR CUENTA"));
         }
     }
 
@@ -943,11 +1053,11 @@ class DashHeroIcon : public QWidget {
    public:
     explicit DashHeroIcon(QWidget* parent = nullptr) : QWidget(parent)
     {
-        setFixedSize(128, 120);
+        setFixedSize(112, 112);
         setCursor(Qt::PointingHandCursor);
         setAttribute(Qt::WA_Hover, true);
         m_anim = new QVariantAnimation(this);
-        m_anim->setDuration(170);
+        m_anim->setDuration(160);
         m_anim->setEasingCurve(QEasingCurve::OutCubic);
         connect(m_anim, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
             m_hover = value.toReal();
@@ -990,23 +1100,13 @@ class DashHeroIcon : public QWidget {
     {
         const DashTheme& t = theme();
         QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        const QPointF c(width() / 2.0, height() / 2.0);
-
-        QRadialGradient glow(c, 60);
-        glow.setColorAt(0, withAlpha(t.accent(), qRound(46 + 34 * m_hover)));
-        glow.setColorAt(1, withAlpha(t.accent(), 0));
-        p.setPen(Qt::NoPen);
-        p.setBrush(glow);
-        p.drawEllipse(c, 60, 60);
-
-        const QRectF box(c.x() - 46, c.y() - 46, 92, 92);
-        p.setPen(QPen(withAlpha(t.accentLight(), qRound(70 + 90 * m_hover)), 1));
-        p.setBrush(withAlpha(t.accent(), 24));
-        p.drawRoundedRect(box, 26, 26);
+        const qreal lift = -qRound(3 * m_hover);  // stepped little hop on hover
+        const QRectF box(8, 12 + lift, 92, 92);
+        drawPixelBox(p, box.translated(5, 5 - lift), 6, QColor(0, 0, 0, 140), QColor(), 0);
+        drawPixelBox(p, box, 6, withAlpha(t.accent(), 34), mixColors(t.ink(), t.accentLight(), m_hover), 2);
         if (!m_pixmap.isNull()) {
-            p.drawPixmap(QRectF(c.x() - 30, c.y() - 30, 60, 60), m_pixmap, QRectF(m_pixmap.rect()));
+            p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+            p.drawPixmap(QRectF(box.center().x() - 30, box.center().y() - 30, 60, 60), m_pixmap, QRectF(m_pixmap.rect()));
         }
     }
 
@@ -1023,9 +1123,46 @@ class DashHeroIcon : public QWidget {
     QVariantAnimation* m_anim = nullptr;
 };
 
+// The "hanko" seal that stands in for a name: a red stamp with a torii gate.
+class DashBrand : public QWidget {
+   public:
+    explicit DashBrand(QWidget* parent = nullptr) : QWidget(parent) { setFixedSize(46, 46); }
+
+   protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        const DashTheme& t = theme();
+        QPainter p(this);
+        const QRectF r(rect());
+        drawPixelBox(p, r.adjusted(0, 0, -3, -3).translated(3, 3), 5, QColor(0, 0, 0, 130), QColor(), 0);
+        drawPixelBox(p, r.adjusted(0, 0, -3, -3), 5, t.accent(), withAlpha(t.ink(), 230), 2);
+        drawGlyph(p, Glyph::Torii, QRectF(9, 9, 23, 23), t.bg());
+    }
+};
+
 class DashWallpaper : public QFrame {
    public:
-    explicit DashWallpaper(QWidget* parent = nullptr) : QFrame(parent) { setObjectName(QStringLiteral("centerPanel")); }
+    explicit DashWallpaper(QWidget* parent = nullptr) : QFrame(parent)
+    {
+        setObjectName(QStringLiteral("centerPanel"));
+        m_timer = new QTimer(this);
+        m_timer->setInterval(110);
+        connect(m_timer, &QTimer::timeout, this, [this]() {
+            if (isVisible() && !hasWallpaper() && theme().animate) {
+                ++m_tick;
+                update();
+            }
+        });
+        m_timer->start();
+    }
+
+    bool hasWallpaper() const { return m_movie || !m_still.isNull(); }
+
+    void invalidateScene()
+    {
+        m_sceneKey.clear();
+        update();
+    }
 
     void setWallpaper(const QString& path)
     {
@@ -1064,12 +1201,10 @@ class DashWallpaper : public QFrame {
     {
         const DashTheme& t = theme();
         QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-        QPainterPath shape;
-        shape.addRoundedRect(r, 22, 22);
-        p.setClipPath(shape);
+        const QRectF r(rect());
+        QPainterPath clip;
+        clip.addPolygon(notchPoly(r, 6, 0));
+        p.setClipPath(clip);
 
         QLinearGradient base(r.topLeft(), r.bottomLeft());
         base.setColorAt(0, t.panelTop());
@@ -1082,30 +1217,232 @@ class DashWallpaper : public QFrame {
             const QSizeF sourceSize(r.width() / scale, r.height() / scale);
             const QRectF source((frame.width() - sourceSize.width()) / 2, (frame.height() - sourceSize.height()) / 2, sourceSize.width(),
                                 sourceSize.height());
-            p.drawPixmap(r, frame, source);
+            if (t.pixel) {
+                const int lw = qMax(1, static_cast<int>(r.width() / kScale));
+                const int lh = qMax(1, static_cast<int>(r.height() / kScale));
+                const QImage small = frame.copy(source.toRect()).toImage().scaled(QSize(lw, lh), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+                p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+                p.drawImage(QRect(0, 0, lw * kScale, lh * kScale), small);
+            } else {
+                p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                p.drawPixmap(r, frame, source);
+            }
             p.fillRect(r, QColor(0, 0, 0, qRound(t.dim * 2.55)));
             QLinearGradient vignette(r.topLeft(), r.bottomLeft());
             vignette.setColorAt(0, QColor(0, 0, 0, 50));
             vignette.setColorAt(0.5, QColor(0, 0, 0, 0));
-            vignette.setColorAt(1, QColor(0, 0, 0, 110));
+            vignette.setColorAt(1, QColor(0, 0, 0, 120));
             p.fillRect(r, vignette);
         } else {
-            QRadialGradient ambient(QPointF(r.center().x(), r.bottom() + 40), r.width() * 0.75);
-            ambient.setColorAt(0, withAlpha(t.accent(), 34));
-            ambient.setColorAt(1, withAlpha(t.accent(), 0));
-            p.fillRect(r, ambient);
+            const int lw = qMax(8, (rect().width() + kScale - 1) / kScale);
+            const int lh = qMax(8, (rect().height() + kScale - 1) / kScale);
+            const QString key = QStringLiteral("%1x%2:%3").arg(lw).arg(lh).arg(t.preset);
+            if (key != m_sceneKey) {
+                buildScene(lw, lh);
+                m_sceneKey = key;
+            }
+            p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+            p.drawImage(QRect(0, 0, lw * kScale, lh * kScale), m_scene);
+            drawOverlay(p, lw, lh);
+            for (int y = 0; y < lh * kScale; y += kScale) {
+                p.fillRect(QRect(0, y + kScale - 1, lw * kScale, 1), QColor(0, 0, 0, 34));
+            }
         }
 
         p.setClipping(false);
-        p.setPen(QPen(whiteA(20), 1));
-        p.setBrush(Qt::NoBrush);
-        p.drawRoundedRect(r, 22, 22);
+        drawPixelBox(p, r, 6, QBrush(Qt::NoBrush), withAlpha(t.ink(), 80), 2);
     }
 
    private:
+    static constexpr int kScale = 3;
+
+    void buildScene(int lw, int lh)
+    {
+        const DashTheme& t = theme();
+        const Palette& pal = t.pal();
+        m_scene = QImage(lw, lh, QImage::Format_ARGB32);
+        m_stars.clear();
+        m_windows.clear();
+        m_horizon = qRound(lh * 0.70);
+        static const int bayer[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+
+        auto skyAt = [&](int x, int y) {
+            const qreal pos = qMin<qreal>(3.999, static_cast<qreal>(y) / m_horizon * 4.0);
+            const int i = static_cast<int>(pos);
+            const qreal f = pos - i;
+            const bool upper = f * 16.0 > bayer[y & 3][x & 3];
+            return QColor(pal.sky[upper ? i + 1 : i]);
+        };
+
+        const QColor ground(pal.skyline);
+        for (int y = 0; y < lh; ++y) {
+            for (int x = 0; x < lw; ++x) {
+                m_scene.setPixelColor(x, y, y < m_horizon ? skyAt(x, y) : ground);
+            }
+        }
+
+        // striped sun, half hidden behind the skyline
+        const int cx = static_cast<int>(lw * 0.50);
+        const int r = static_cast<int>(qMin(lw, lh) * 0.19);
+        const int cy = static_cast<int>(lh * 0.25);
+        const QColor sun(pal.sun);
+        for (int y = cy - r; y <= cy + r; ++y) {
+            for (int x = cx - r; x <= cx + r; ++x) {
+                if (x < 0 || y < 0 || x >= lw || y >= m_horizon) {
+                    continue;
+                }
+                if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > r * r) {
+                    continue;
+                }
+                const int rel = y - (cy - r / 3);
+                bool cut = false;
+                if (rel > 0) {
+                    const int thickness = qMin(4, 1 + rel / qMax(1, r / 3));
+                    cut = (rel % 6) < thickness;
+                }
+                m_scene.setPixelColor(x, y, cut ? skyAt(x, y) : sun);
+            }
+        }
+
+        // skyline
+        quint32 seed = 0x9e3779b9u;
+        auto rnd = [&seed]() {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            return seed;
+        };
+        const int towerX = static_cast<int>(lw * 0.12);
+        // far skyline: lighter silhouettes behind the main ones, for depth
+        {
+            const QColor far = mixColors(QColor(pal.sky[4]), QColor(pal.skyline), 0.86);
+            int fx = 0;
+            while (fx < lw) {
+                const int fw = 5 + static_cast<int>(rnd() % 9);
+                const int fh = static_cast<int>(lh * 0.10) + static_cast<int>(rnd() % static_cast<quint32>(qMax(2, static_cast<int>(lh * 0.14))));
+                for (int by = m_horizon - fh; by < m_horizon; ++by) {
+                    for (int bx = fx; bx < qMin(fx + fw, lw); ++bx) {
+                        m_scene.setPixelColor(bx, by, far);
+                    }
+                }
+                fx += fw;
+            }
+        }
+        int x = 0;
+        while (x < lw) {
+            const int w = 4 + static_cast<int>(rnd() % 7);
+            const int h = static_cast<int>(lh * 0.05) + static_cast<int>(rnd() % static_cast<quint32>(qMax(2, static_cast<int>(lh * 0.17))));
+            const int top = m_horizon - h;
+            const bool nearTower = qAbs(x + w / 2 - towerX) < 9;
+            for (int by = top; by < m_horizon; ++by) {
+                for (int bx = x; bx < qMin(x + w, lw); ++bx) {
+                    if (!nearTower) {
+                        m_scene.setPixelColor(bx, by, ground);
+                    }
+                }
+            }
+            if (!nearTower) {
+                for (int wy = top + 2; wy < m_horizon - 1; wy += 3) {
+                    for (int wx = x + 1; wx < x + w - 1 && wx < lw; wx += 2) {
+                        if (rnd() % 100 < 22) {
+                            m_scene.setPixelColor(wx, wy, QColor(pal.window));
+                            m_windows.append(QPoint(wx, wy));
+                        }
+                    }
+                }
+            }
+            x += w + ((rnd() % 3) == 0 ? 1 : 0);
+        }
+
+        // Tokyo Tower
+        const int towerH = static_cast<int>(lh * 0.44);
+        const int topY = m_horizon - towerH;
+        QPainter ip(&m_scene);
+        ip.setRenderHint(QPainter::Antialiasing, false);
+        ip.setPen(ground);
+        ip.setBrush(ground);
+        QPolygon body;
+        body << QPoint(towerX - 9, m_horizon) << QPoint(towerX - 3, m_horizon - static_cast<int>(towerH * 0.42))
+             << QPoint(towerX - 2, m_horizon - static_cast<int>(towerH * 0.72)) << QPoint(towerX - 1, topY + 6) << QPoint(towerX, topY)
+             << QPoint(towerX + 1, topY + 6) << QPoint(towerX + 2, m_horizon - static_cast<int>(towerH * 0.72))
+             << QPoint(towerX + 3, m_horizon - static_cast<int>(towerH * 0.42)) << QPoint(towerX + 9, m_horizon);
+        ip.drawPolygon(body);
+        ip.drawRect(towerX - 5, m_horizon - static_cast<int>(towerH * 0.42) - 1, 11, 2);
+        ip.drawRect(towerX - 3, m_horizon - static_cast<int>(towerH * 0.72), 7, 1);
+        ip.end();
+        for (int sy = topY + 8; sy < m_horizon - 4; sy += 6) {
+            if (towerX >= 0 && towerX < lw) {
+                m_scene.setPixelColor(towerX, sy, QColor(pal.accent));
+            }
+        }
+        m_beacon = QPoint(towerX, topY - 1);
+
+        // stars
+        for (int i = 0; i < 30; ++i) {
+            m_stars.append(QPoint(static_cast<int>(rnd() % static_cast<quint32>(lw)), static_cast<int>(rnd() % static_cast<quint32>(qMax(2, static_cast<int>(m_horizon * 0.55))))));
+        }
+    }
+
+    void drawOverlay(QPainter& p, int lw, int lh)
+    {
+        const DashTheme& t = theme();
+        const Palette& pal = t.pal();
+        const int tk = t.animate ? m_tick : 0;
+        auto px = [&](int x, int y, int w, int h, const QColor& c) { p.fillRect(QRect(x * kScale, y * kScale, w * kScale, h * kScale), c); };
+
+        for (int i = 0; i < m_stars.size(); ++i) {
+            const int phase = (tk / 2 + i * 5) % 20;
+            const int alpha = phase < 2 ? 255 : (phase < 10 ? 170 : 90);
+            px(m_stars[i].x(), m_stars[i].y(), 1, 1, withAlpha(QColor(pal.ink), alpha));
+        }
+        for (int i = 0; i < m_windows.size(); ++i) {
+            if (((tk / 9) + i * 7) % 13 == 0) {
+                px(m_windows[i].x(), m_windows[i].y(), 1, 1, QColor(pal.skyline));
+            }
+        }
+        if ((tk / 6) % 2 == 0) {
+            px(m_beacon.x(), m_beacon.y(), 1, 2, QColor(pal.accent));
+        }
+
+        switch (pal.weather) {
+            case WeatherRain:
+                for (int i = 0; i < 44; ++i) {
+                    const int x = (i * 53) % lw;
+                    const int y = ((i * 29) % m_horizon + tk * 3) % m_horizon;
+                    px(x, y, 1, 3, withAlpha(t.secondary(), 170));
+                }
+                break;
+            case WeatherPetals:
+                for (int i = 0; i < 24; ++i) {
+                    const int x = (i * 47 + tk / 2 + static_cast<int>(4 * qSin((tk + i * 9) / 10.0)) + lw) % lw;
+                    const int y = (i * 31 + tk) % (lh + 6);
+                    px(x, y, 2, 1, withAlpha(t.accent(), 220));
+                    px(x + 1, y + 1, 1, 1, withAlpha(t.accentLight(), 200));
+                }
+                break;
+            case WeatherMist:
+                for (int i = 0; i < 5; ++i) {
+                    const int x = ((i * 61 + tk / 3) % (lw + 40)) - 20;
+                    px(x, static_cast<int>(m_horizon * (0.25 + 0.12 * i)), 16 + i * 4, 2, withAlpha(QColor(pal.ink), 32));
+                }
+                px(0, m_horizon - 8, lw, 6, withAlpha(QColor(pal.ink), 14));
+                break;
+            default:
+                break;
+        }
+    }
+
     QString m_path;
     QMovie* m_movie = nullptr;
     QPixmap m_still;
+    QImage m_scene;
+    QString m_sceneKey;
+    QVector<QPoint> m_stars;
+    QVector<QPoint> m_windows;
+    QPoint m_beacon;
+    int m_horizon = 0;
+    QTimer* m_timer = nullptr;
+    int m_tick = 0;
 };
 
 namespace {
@@ -1120,38 +1457,23 @@ class InstanceRowDelegate : public QStyledItemDelegate {
     {
         const DashTheme& t = theme();
         p->save();
-        p->setRenderHint(QPainter::Antialiasing, true);
-        p->setRenderHint(QPainter::SmoothPixmapTransform, true);
-
         const QRectF r = QRectF(option.rect).adjusted(2, 3, -2, -3);
         const bool selected = option.state & QStyle::State_Selected;
         const bool hot = option.state & QStyle::State_MouseOver;
 
-        QPainterPath path;
-        path.addRoundedRect(r, 15, 15);
         if (selected) {
-            QLinearGradient g(r.topLeft(), r.topRight());
-            g.setColorAt(0, withAlpha(t.accent(), 52));
-            g.setColorAt(1, withAlpha(t.accent(), 16));
-            p->fillPath(path, g);
-            p->setPen(QPen(withAlpha(t.accentLight(), 140), 1));
+            drawPixelBox(*p, r, 4, withAlpha(t.accent(), 46), t.accent(), 2);
+            p->fillRect(QRectF(r.left() + 2, r.top() + 6, 3, r.height() - 12), t.accentLight());
         } else {
-            p->fillPath(path, whiteA(hot ? 15 : 7));
-            p->setPen(QPen(whiteA(hot ? 46 : 20), 1));
+            drawPixelBox(*p, r, 4, withAlpha(t.ink(), hot ? 16 : 7), withAlpha(t.ink(), hot ? 110 : 45), 1);
         }
-        p->setBrush(Qt::NoBrush);
-        p->drawPath(path);
 
-        const QColor rings[] = { kCyan, t.accentLight(), kPurple };
-        const QColor ring = rings[index.row() % 3];
-        const QRectF badge(r.left() + 11, r.center().y() - 18, 36, 36);
-        p->setBrush(withAlpha(ring, 34));
-        p->setPen(QPen(withAlpha(ring, 175), 1.5));
-        p->drawEllipse(badge);
-
+        const QRectF badge(r.left() + 12, r.center().y() - 18, 36, 36);
+        drawPixelBox(*p, badge, 3, withAlpha(t.bg(), 200), selected ? t.accentLight() : withAlpha(t.ink(), 110), 2);
         const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
         if (!icon.isNull()) {
             const QPixmap pm = icon.pixmap(QSize(24, 24));
+            p->setRenderHint(QPainter::SmoothPixmapTransform, false);
             p->drawPixmap(QRectF(badge.center().x() - 12, badge.center().y() - 12, 24, 24), pm, QRectF(pm.rect()));
         }
 
@@ -1159,20 +1481,18 @@ class InstanceRowDelegate : public QStyledItemDelegate {
         const bool running = inst && inst->isRunning();
 
         const qreal textLeft = badge.right() + 12;
-        const qreal pillWidth = running ? 68 : 0;
+        const qreal pillWidth = running ? 74 : 0;
         const qreal textWidth = r.right() - textLeft - 12 - (running ? pillWidth + 6 : 0);
 
-        QFont titleFont = option.font;
-        titleFont.setBold(true);
+        QFont titleFont = monoFont(13, true);
         p->setFont(titleFont);
-        p->setPen(selected ? QColor(255, 255, 255) : kTextBright);
+        p->setPen(selected ? t.accentLight() : t.text());
         const QString name = QFontMetrics(titleFont).elidedText(index.data(Qt::DisplayRole).toString(), Qt::ElideRight, static_cast<int>(textWidth));
         p->drawText(QRectF(textLeft, r.top() + 9, textWidth, 20), Qt::AlignVCenter | Qt::AlignLeft, name);
 
-        QFont subFont = option.font;
-        subFont.setPointSizeF(qMax<qreal>(7.0, subFont.pointSizeF() * 0.85));
+        QFont subFont = monoFont(11, false);
         p->setFont(subFont);
-        p->setPen(kTextDim);
+        p->setPen(t.dimText());
         QString sub = describeInstance(inst);
         if (sub.isEmpty()) {
             sub = index.data(InstanceList::GroupRole).toString();
@@ -1182,30 +1502,27 @@ class InstanceRowDelegate : public QStyledItemDelegate {
 
         if (running) {
             const QRectF pill(r.right() - pillWidth - 10, r.center().y() - 10, pillWidth, 20);
-            p->setPen(Qt::NoPen);
-            p->setBrush(withAlpha(t.accent(), 60));
-            p->drawRoundedRect(pill, 10, 10);
-            p->setPen(t.accentText());
-            p->setFont(subFont);
+            drawPixelBox(*p, pill, 2, t.accent(), QColor(), 0);
+            p->setPen(t.onAccent());
+            p->setFont(monoFont(10, true));
             p->drawText(pill, Qt::AlignCenter, QStringLiteral("EN JUEGO"));
         }
         p->restore();
     }
 };
 
-QFrame* makeFrame(const char* objectName, QWidget* parent)
-{
-    auto* frame = new QFrame(parent);
-    frame->setObjectName(QString::fromLatin1(objectName));
-    frame->setAttribute(Qt::WA_StyledBackground, true);
-    return frame;
-}
-
 QLabel* makeLabel(const QString& text, const char* objectName, QWidget* parent)
 {
     auto* label = new QLabel(text, parent);
     label->setObjectName(QString::fromLatin1(objectName));
     return label;
+}
+
+QFrame* makeDivider(QWidget* parent)
+{
+    auto* frame = new QFrame(parent);
+    frame->setObjectName(QStringLiteral("divider"));
+    return frame;
 }
 
 QString stripStamp(const QString& fileName)
@@ -1245,11 +1562,14 @@ void Dashboard::buildUi(const DashboardActions& a)
     root->setSpacing(12);
 
     // ------------------------------------------------------------------ left sidebar
-    auto* sidebar = makeFrame("sidebar", this);
-    sidebar->setFixedWidth(74);
+    auto* sidebar = new DashFrame(DashFrame::Kind::Panel, this);
+    sidebar->setFixedWidth(76);
     auto* side = new QVBoxLayout(sidebar);
-    side->setContentsMargins(13, 14, 13, 14);
+    side->setContentsMargins(14, 14, 14, 14);
     side->setSpacing(10);
+
+    side->addWidget(new DashBrand(sidebar), 0, Qt::AlignHCenter);
+    side->addWidget(makeDivider(sidebar));
 
     auto* home = new DashButton(Glyph::Grid, DashButton::Kind::Square, sidebar);
     home->setActive(true);
@@ -1280,7 +1600,7 @@ void Dashboard::buildUi(const DashboardActions& a)
         side->addWidget(button);
     }
     side->addStretch(1);
-    side->addWidget(makeFrame("divider", sidebar));
+    side->addWidget(makeDivider(sidebar));
 
     // "more" menu: everything that used to live in the toolbar and is not worth a permanent button
     auto* moreMenu = new QMenu(this);
@@ -1320,7 +1640,7 @@ void Dashboard::buildUi(const DashboardActions& a)
 
     m_centerPanel = new DashWallpaper(this);
     auto* pl = new QVBoxLayout(m_centerPanel);
-    pl->setContentsMargins(22, 18, 22, 16);
+    pl->setContentsMargins(22, 20, 22, 16);
     pl->setSpacing(10);
 
     auto* top = new QHBoxLayout();
@@ -1330,18 +1650,19 @@ void Dashboard::buildUi(const DashboardActions& a)
     pl->addLayout(top);
     pl->addStretch(1);
 
-    // hero card
-    auto* hero = makeFrame("heroCard", m_centerPanel);
-    hero->setMinimumWidth(440);
-    hero->setMaximumWidth(560);
+    // hero card: a boxed dialog with an inverted title bar
+    auto* hero = new DashFrame(DashFrame::Kind::Hero, m_centerPanel);
+    hero->setTitle(QStringLiteral("> INSTANCIA"));
+    hero->setMinimumWidth(450);
+    hero->setMaximumWidth(570);
     auto* hl = new QVBoxLayout(hero);
-    hl->setContentsMargins(30, 26, 30, 28);
+    hl->setContentsMargins(30, 36, 35, 30);
     hl->setSpacing(4);
 
     m_heroContent = new QWidget(hero);
     auto* hc = new QVBoxLayout(m_heroContent);
     hc->setContentsMargins(0, 0, 0, 0);
-    hc->setSpacing(4);
+    hc->setSpacing(2);
     m_heroIcon = new DashHeroIcon(m_heroContent);
     m_heroIcon->setToolTip(QStringLiteral("Cambiar el icono de la instancia"));
     m_heroIcon->onClick = [this]() {
@@ -1356,11 +1677,8 @@ void Dashboard::buildUi(const DashboardActions& a)
     m_heroSub = makeLabel(QString(), "heroSub", m_heroContent);
     m_heroSub->setAlignment(Qt::AlignCenter);
     hc->addWidget(m_heroSub);
-    m_heroFade = new QGraphicsOpacityEffect(m_heroContent);
-    m_heroFade->setOpacity(1.0);
-    m_heroContent->setGraphicsEffect(m_heroFade);
     hl->addWidget(m_heroContent);
-    hl->addSpacing(14);
+    hl->addSpacing(12);
 
     auto* playRow = new QHBoxLayout();
     playRow->setSpacing(10);
@@ -1369,10 +1687,6 @@ void Dashboard::buildUi(const DashboardActions& a)
     if (a.launch) {
         m_playButton->setDefaultAction(a.launch);
     }
-    m_playGlow = new QGraphicsDropShadowEffect(m_playButton);
-    m_playGlow->setBlurRadius(26);
-    m_playGlow->setOffset(0, 0);
-    m_playButton->setGraphicsEffect(m_playGlow);
     playRow->addWidget(m_playButton);
     m_stopButton = new DashButton(Glyph::Stop, DashButton::Kind::Round, hero);
     if (a.kill) {
@@ -1395,7 +1709,17 @@ void Dashboard::buildUi(const DashboardActions& a)
     m_heroAnim->setEasingCurve(QEasingCurve::OutCubic);
     m_heroAnim->setStartValue(0.0);
     m_heroAnim->setEndValue(1.0);
-    connect(m_heroAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) { m_heroFade->setOpacity(value.toReal()); });
+    connect(m_heroAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+        if (m_heroFade) {
+            m_heroFade->setOpacity(value.toReal());
+        }
+    });
+    connect(m_heroAnim, &QVariantAnimation::finished, this, [this]() {
+        if (m_heroFade && m_heroFade->opacity() >= 0.999) {
+            m_heroContent->setGraphicsEffect(nullptr);  // effects are expensive: drop it once the fade is over
+            m_heroFade = nullptr;
+        }
+    });
 
     // footer: status + activity bar
     auto* foot = new QHBoxLayout();
@@ -1414,13 +1738,13 @@ void Dashboard::buildUi(const DashboardActions& a)
     center->addWidget(m_centerPanel, 1);
 
     // instance details card (full width)
-    auto* card1 = makeFrame("card", this);
+    auto* card1 = new DashFrame(DashFrame::Kind::Card, this);
     card1->setFixedHeight(136);
     auto* c1 = new QVBoxLayout(card1);
     c1->setContentsMargins(18, 14, 18, 12);
     c1->setSpacing(10);
     auto* c1head = new QHBoxLayout();
-    c1head->addWidget(makeLabel(QStringLiteral(u"\u25cf  Instancia"), "cardTitle", card1));
+    c1head->addWidget(makeLabel(QStringLiteral(u"\u25a0 DATOS DE LA INSTANCIA"), "cardTitle", card1));
     c1head->addStretch(1);
     m_cardBadge = makeLabel(QString(), "badge", card1);
     c1head->addWidget(m_cardBadge);
@@ -1436,9 +1760,9 @@ void Dashboard::buildUi(const DashboardActions& a)
     chips->addStretch(1);
     c1->addLayout(chips);
     c1->addStretch(1);
-    c1->addWidget(makeFrame("divider", card1));
+    c1->addWidget(makeDivider(card1));
     auto* c1foot = new QHBoxLayout();
-    c1foot->addWidget(makeLabel(QStringLiteral("Tiempo jugado"), "statusText", card1));
+    c1foot->addWidget(makeLabel(QStringLiteral("TIEMPO JUGADO"), "statusText", card1));
     c1foot->addStretch(1);
     m_cardPlayed = makeLabel(QString(), "statusText", card1);
     c1foot->addWidget(m_cardPlayed);
@@ -1447,8 +1771,8 @@ void Dashboard::buildUi(const DashboardActions& a)
     root->addLayout(center, 1);
 
     // ------------------------------------------------------------------ right panel
-    auto* rightPanel = makeFrame("rightPanel", this);
-    rightPanel->setFixedWidth(340);
+    auto* rightPanel = new DashFrame(DashFrame::Kind::Panel, this);
+    rightPanel->setFixedWidth(344);
     auto* rl = new QVBoxLayout(rightPanel);
     rl->setContentsMargins(18, 18, 18, 16);
     rl->setSpacing(12);
@@ -1465,15 +1789,14 @@ void Dashboard::buildUi(const DashboardActions& a)
     m_accountBadge->setAlignment(Qt::AlignCenter);
     accountRow->addWidget(m_accountBadge, 0, Qt::AlignVCenter);
     rl->addLayout(accountRow);
-    rl->addWidget(makeFrame("divider", rightPanel));
+    rl->addWidget(makeDivider(rightPanel));
 
-    // appearance drawer (replaces the old memory card)
-    auto* drawer = makeFrame("card", rightPanel);
+    // appearance drawer
+    auto* drawer = new DashFrame(DashFrame::Kind::Card, rightPanel);
     auto* dl = new QVBoxLayout(drawer);
     dl->setContentsMargins(0, 0, 0, 0);
     dl->setSpacing(0);
     auto* drawerHeader = new DashButton(Glyph::Palette, DashButton::Kind::Header, drawer);
-    drawerHeader->setObjectName(QStringLiteral("drawerHeader"));
     drawerHeader->setText(QStringLiteral("Apariencia"));
     dl->addWidget(drawerHeader);
 
@@ -1482,64 +1805,63 @@ void Dashboard::buildUi(const DashboardActions& a)
     bl->setContentsMargins(16, 2, 16, 16);
     bl->setSpacing(8);
 
-    bl->addWidget(makeLabel(QStringLiteral("COLOR DE ACENTO"), "sectionTitle", m_drawerBody));
+    bl->addWidget(makeLabel(QStringLiteral("ESTILO"), "sectionTitle", m_drawerBody));
+    auto* styleGrid = new QVBoxLayout();
+    styleGrid->setSpacing(6);
+    QHBoxLayout* styleRow = nullptr;
+    for (int i = 0; i < kPaletteCount; ++i) {
+        if (i % 3 == 0) {
+            styleRow = new QHBoxLayout();
+            styleRow->setSpacing(6);
+            styleGrid->addLayout(styleRow);
+        }
+        auto* chip = new DashButton(Glyph::None, DashButton::Kind::Chip, m_drawerBody);
+        chip->setText(QString::fromUtf16(kPalettes[i].name));
+        chip->setToolTip(QString::fromUtf16(kPalettes[i].name));
+        connect(chip, &QToolButton::clicked, this, [this, i]() {
+            theme().preset = i;
+            theme().hueOverride = -1;
+            syncThemeControls();
+            scheduleThemeApply();
+        });
+        styleRow->addWidget(chip);
+        m_styleChips.append(chip);
+    }
+    styleRow->addStretch(1);
+    bl->addLayout(styleGrid);
+
+    bl->addSpacing(2);
+    bl->addWidget(makeLabel(QStringLiteral("ACENTO"), "sectionTitle", m_drawerBody));
+    auto* hueRow = new QHBoxLayout();
+    hueRow->setSpacing(8);
     m_hueSlider = new QSlider(Qt::Horizontal, m_drawerBody);
     m_hueSlider->setObjectName(QStringLiteral("hueSlider"));
     m_hueSlider->setRange(0, 359);
     m_hueSlider->setFixedHeight(24);
-    bl->addWidget(m_hueSlider);
-    auto* swatches = new QHBoxLayout();
-    swatches->setSpacing(6);
-    const struct {
-        int hue;
-        const char16_t* name;
-    } presets[] = {
-        { 160, u"Esmeralda" }, { 195, u"Oc\u00e9ano" }, { 222, u"Zafiro" }, { 265, u"Violeta" },
-        { 330, u"Rosa" },      { 22, u"Atardecer" },     { 350, u"Rub\u00ed" },
-    };
-    for (const auto& preset : presets) {
-        auto* swatch = new DashButton(Glyph::None, DashButton::Kind::Swatch, m_drawerBody);
-        swatch->setSwatchHue(preset.hue);
-        swatch->setToolTip(QString::fromUtf16(preset.name));
-        const int hue = preset.hue;
-        connect(swatch, &QToolButton::clicked, this, [this, hue]() {
-            theme().hue = hue;
-            syncThemeControls();
-            scheduleThemeApply();
-        });
-        swatches->addWidget(swatch);
-    }
-    swatches->addStretch(1);
-    bl->addLayout(swatches);
-
-    bl->addSpacing(4);
-    bl->addWidget(makeLabel(QStringLiteral("BASE"), "sectionTitle", m_drawerBody));
-    auto* baseRow = new QHBoxLayout();
-    baseRow->setSpacing(8);
-    m_baseDark = new DashButton(Glyph::None, DashButton::Kind::Chip, m_drawerBody);
-    m_baseDark->setText(QStringLiteral("Oscuro"));
-    m_baseAmoled = new DashButton(Glyph::None, DashButton::Kind::Chip, m_drawerBody);
-    m_baseAmoled->setText(QStringLiteral("Medianoche"));
-    baseRow->addWidget(m_baseDark);
-    baseRow->addWidget(m_baseAmoled);
-    baseRow->addStretch(1);
-    bl->addLayout(baseRow);
-    connect(m_baseDark, &QToolButton::clicked, this, [this]() {
-        theme().amoled = false;
+    hueRow->addWidget(m_hueSlider, 1);
+    auto* autoChip = new DashButton(Glyph::None, DashButton::Kind::Chip, m_drawerBody);
+    autoChip->setText(QStringLiteral("Auto"));
+    autoChip->setToolTip(QStringLiteral("Volver al color original del estilo"));
+    hueRow->addWidget(autoChip);
+    bl->addLayout(hueRow);
+    connect(autoChip, &QToolButton::clicked, this, [this]() {
+        theme().hueOverride = -1;
         syncThemeControls();
         scheduleThemeApply();
     });
-    connect(m_baseAmoled, &QToolButton::clicked, this, [this]() {
-        theme().amoled = true;
-        syncThemeControls();
+    connect(m_hueSlider, &QSlider::valueChanged, this, [this](int value) {
+        if (m_syncingTheme) {
+            return;
+        }
+        theme().hueOverride = value;
         scheduleThemeApply();
     });
 
-    bl->addSpacing(4);
+    bl->addSpacing(2);
     bl->addWidget(makeLabel(QStringLiteral("FONDO"), "sectionTitle", m_drawerBody));
     auto* wallRow = new QHBoxLayout();
     wallRow->setSpacing(8);
-    auto* chooseButton = new DashButton(Glyph::Image, DashButton::Kind::Chip, m_drawerBody);
+    auto* chooseButton = new DashButton(Glyph::None, DashButton::Kind::Chip, m_drawerBody);
     chooseButton->setText(QStringLiteral(u"Elegir imagen o GIF\u2026"));
     auto* removeButton = new DashButton(Glyph::None, DashButton::Kind::Chip, m_drawerBody);
     removeButton->setText(QStringLiteral("Quitar"));
@@ -1554,7 +1876,7 @@ void Dashboard::buildUi(const DashboardActions& a)
     bl->addWidget(m_wallpaperName);
 
     auto* dimRow = new QHBoxLayout();
-    dimRow->addWidget(makeLabel(QStringLiteral("Oscurecer fondo"), "statusText", m_drawerBody));
+    dimRow->addWidget(makeLabel(QStringLiteral("Oscurecer"), "statusText", m_drawerBody));
     m_dimSlider = new QSlider(Qt::Horizontal, m_drawerBody);
     m_dimSlider->setRange(0, 90);
     m_dimSlider->setFixedHeight(24);
@@ -1569,19 +1891,30 @@ void Dashboard::buildUi(const DashboardActions& a)
         scheduleThemeApply();
     });
 
-    auto* onlyRow = new QHBoxLayout();
-    m_onlyThisInstance = new DashSwitch(m_drawerBody);
-    onlyRow->addWidget(m_onlyThisInstance);
-    onlyRow->addWidget(makeLabel(QStringLiteral("Solo para esta instancia"), "statusText", m_drawerBody));
-    onlyRow->addStretch(1);
-    bl->addLayout(onlyRow);
+    auto addSwitchRow = [&](DashSwitch*& target, const QString& label) {
+        auto* row = new QHBoxLayout();
+        target = new DashSwitch(m_drawerBody);
+        row->addWidget(target);
+        row->addWidget(makeLabel(label, "statusText", m_drawerBody));
+        row->addStretch(1);
+        bl->addLayout(row);
+    };
+    addSwitchRow(m_onlyThisInstance, QStringLiteral("Solo para esta instancia"));
+    addSwitchRow(m_pixelSwitch, QStringLiteral("Filtro pixel en mi fondo"));
+    addSwitchRow(m_animSwitch, QStringLiteral("Animar el paisaje"));
     connect(m_onlyThisInstance, &QAbstractButton::toggled, this, [this]() { syncThemeControls(); });
-
-    connect(m_hueSlider, &QSlider::valueChanged, this, [this](int value) {
+    connect(m_pixelSwitch, &QAbstractButton::toggled, this, [this](bool on) {
         if (m_syncingTheme) {
             return;
         }
-        theme().hue = value;
+        theme().pixel = on;
+        scheduleThemeApply();
+    });
+    connect(m_animSwitch, &QAbstractButton::toggled, this, [this](bool on) {
+        if (m_syncingTheme) {
+            return;
+        }
+        theme().animate = on;
         scheduleThemeApply();
     });
 
@@ -1676,9 +2009,9 @@ void Dashboard::buildUi(const DashboardActions& a)
 void Dashboard::updateInstanceCount()
 {
     const int n = m_model ? m_model->rowCount() : 0;
-    m_countChip->setText(QStringLiteral("<span style='color:%3'>\u25cf</span>&nbsp;&nbsp;%1 %2")
+    m_countChip->setText(QStringLiteral("<span style='color:%3'>\u25a0</span>&nbsp;&nbsp;%1 %2")
                              .arg(n)
-                             .arg(n == 1 ? QStringLiteral("instancia") : QStringLiteral("instancias"))
+                             .arg(n == 1 ? QStringLiteral("INSTANCIA") : QStringLiteral("INSTANCIAS"))
                              .arg(theme().accentLight().name()));
 }
 
@@ -1709,9 +2042,7 @@ void Dashboard::applyTheme()
 {
     const DashTheme& t = theme();
     setStyleSheet(t.styleSheet());
-    if (m_playGlow) {
-        m_playGlow->setColor(withAlpha(t.accent(), 95));
-    }
+    m_centerPanel->invalidateScene();
     applyWallpaper();
     updateInstanceCount();
     const auto widgets = findChildren<QWidget*>();
@@ -1736,22 +2067,27 @@ void Dashboard::syncThemeControls()
     }
     const DashTheme& t = theme();
     m_syncingTheme = true;
-    m_hueSlider->setValue(t.hue);
+    m_hueSlider->setValue(t.hueOverride >= 0 ? t.hueOverride : qMax(0, static_cast<int>(qRound(t.accent().hslHueF() * 360.0)) % 360));
     m_dimSlider->setValue(t.dim);
+    m_pixelSwitch->setChecked(t.pixel);
+    m_animSwitch->setChecked(t.animate);
     m_syncingTheme = false;
-    m_baseDark->setActive(!t.amoled);
-    m_baseAmoled->setActive(t.amoled);
+    for (int i = 0; i < m_styleChips.size(); ++i) {
+        m_styleChips[i]->setActive(i == t.preset);
+    }
 
     QString text;
     const QString own = t.instanceWallpapers.value(m_lastInstanceId);
     if (m_onlyThisInstance->isChecked()) {
         text = own.isEmpty() ? QStringLiteral("Esta instancia usa el fondo general") : QStringLiteral("Esta instancia: ") + stripStamp(own);
     } else {
-        text = t.wallpaper.isEmpty() ? QStringLiteral("Sin fondo (se usa el degradado)") : QStringLiteral("General: ") + stripStamp(t.wallpaper);
+        text = t.wallpaper.isEmpty() ? QStringLiteral("Sin fondo propio (paisaje del estilo)") : QStringLiteral("General: ") + stripStamp(t.wallpaper);
     }
     m_wallpaperName->setText(text);
-    for (auto* swatch : m_drawerBody->findChildren<DashButton*>()) {
-        swatch->update();
+    // findChildren<> needs a Q_OBJECT class on newer Qt versions, so refresh the drawer through plain QWidget
+    const auto drawerWidgets = m_drawerBody->findChildren<QWidget*>();
+    for (QWidget* widget : drawerWidgets) {
+        widget->update();
     }
 }
 
@@ -1832,20 +2168,21 @@ void Dashboard::refresh()
     const bool instanceChanged = id != m_lastInstanceId;
     m_lastInstanceId = id;
 
-    const QString dotVersion = QStringLiteral("<span style='color:#22d3ee'>\u25cf</span>&nbsp;&nbsp;%1");
-    const QString dotLoader = QStringLiteral("<span style='color:%1'>\u25cf</span>&nbsp;&nbsp;%2");
-    const QString dotRam = QStringLiteral("<span style='color:#a78bfa'>\u25cf</span>&nbsp;&nbsp;%1");
+    const QString dotVersion = QStringLiteral("<span style='color:%1'>\u25a0</span>&nbsp;&nbsp;%2");
+    const QString c1 = t.secondary().name();
+    const QString c2 = t.accentLight().name();
+    const QString c3 = t.tertiary().name();
 
     if (!has) {
         m_heroName->setText(QStringLiteral("Sin instancia seleccionada"));
         m_heroSub->setText(QStringLiteral("Elige una instancia de la lista"));
         m_heroIcon->setPixmap(glyphPixmap(Glyph::Cube, t.accentLight(), 56, dpr));
-        m_chipVersion->setText(dotVersion.arg(QStringLiteral("\u2014")));
-        m_chipLoader->setText(dotLoader.arg(t.accentLight().name(), QStringLiteral("\u2014")));
-        m_chipRam->setText(dotRam.arg(QStringLiteral("\u2014")));
-        m_cardBadge->setText(QStringLiteral(u"Sin selecci\u00f3n"));
+        m_chipVersion->setText(dotVersion.arg(c1, QStringLiteral("\u2014")));
+        m_chipLoader->setText(dotVersion.arg(c2, QStringLiteral("\u2014")));
+        m_chipRam->setText(dotVersion.arg(c3, QStringLiteral("\u2014")));
+        m_cardBadge->setText(QStringLiteral(u"SIN SELECCI\u00d3N"));
         m_cardPlayed->setText(QStringLiteral("\u2014"));
-        m_statusText->setText(QStringLiteral("Sin instancia seleccionada"));
+        m_statusText->setText(QStringLiteral("> sin instancia seleccionada"));
         m_activity->setRange(0, 1);
         m_activity->setValue(0);
     } else {
@@ -1861,19 +2198,19 @@ void Dashboard::refresh()
         }
 
         const PackInfo info = readPackInfo(inst);
-        m_chipVersion->setText(dotVersion.arg(info.version.isEmpty() ? QStringLiteral("Minecraft") : info.version));
-        m_chipLoader->setText(dotLoader.arg(t.accentLight().name(), info.loader.isEmpty() ? QStringLiteral("Vanilla") : info.loader));
-        m_chipRam->setText(dotRam.arg(QStringLiteral("%1 MiB").arg(inst->settings()->get(QStringLiteral("MaxMemAlloc")).toInt())));
+        m_chipVersion->setText(dotVersion.arg(c1, info.version.isEmpty() ? QStringLiteral("Minecraft") : info.version));
+        m_chipLoader->setText(dotVersion.arg(c2, info.loader.isEmpty() ? QStringLiteral("Vanilla") : info.loader));
+        m_chipRam->setText(dotVersion.arg(c3, QStringLiteral("%1 MiB").arg(inst->settings()->get(QStringLiteral("MaxMemAlloc")).toInt())));
         const qint64 played = inst->totalTimePlayed();
-        m_cardPlayed->setText(played > 0 ? Time::prettifyDuration(played) : QStringLiteral(u"A\u00fan sin jugar"));
+        m_cardPlayed->setText(played > 0 ? Time::prettifyDuration(played) : QStringLiteral(u"A\u00daN SIN JUGAR"));
 
         if (inst->isRunning()) {
-            m_cardBadge->setText(QStringLiteral("En juego"));
-            m_statusText->setText(QStringLiteral(u"\u25cf  En ejecuci\u00f3n \u2014 ") + inst->name());
+            m_cardBadge->setText(QStringLiteral("EN JUEGO"));
+            m_statusText->setText(QStringLiteral("> en ejecuci\u00f3n: ") + inst->name());
             m_activity->setRange(0, 0);
         } else {
-            m_cardBadge->setText(QStringLiteral("Listo"));
-            m_statusText->setText(inst->getStatusbarDescription());
+            m_cardBadge->setText(QStringLiteral("LISTO"));
+            m_statusText->setText(QStringLiteral("> ") + inst->getStatusbarDescription());
             m_activity->setRange(0, 1);
             m_activity->setValue(0);
         }
@@ -1883,11 +2220,14 @@ void Dashboard::refresh()
         applyWallpaper();
         syncThemeControls();
         m_heroAnim->stop();
+        m_heroFade = new QGraphicsOpacityEffect(m_heroContent);
+        m_heroFade->setOpacity(0.0);
+        m_heroContent->setGraphicsEffect(m_heroFade);
         m_heroAnim->start();
     }
 
     const int total = APPLICATION->instances()->getTotalPlayTime();
-    m_playtime->setText(total > 0 ? QStringLiteral("Tiempo total: %1").arg(Time::prettifyDuration(total)) : QString());
+    m_playtime->setText(total > 0 ? QStringLiteral("TOTAL: %1").arg(Time::prettifyDuration(total).toUpper()) : QString());
 
     if (m_avatars) {
         m_avatars->reload();

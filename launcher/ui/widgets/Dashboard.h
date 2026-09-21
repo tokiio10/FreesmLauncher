@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 /*
- *  Emerald Glass dashboard - a full visual replacement for the main window contents.
+ *  Tokio dashboard - a full visual replacement for the main window contents.
  *
  *  This widget only *presents* things: every button is bound to an existing QAction of the
  *  main window, and the instance list shares the model and selection of the original view.
@@ -26,7 +26,6 @@ class BaseInstance;
 class QDragEnterEvent;
 class QDropEvent;
 class QFrame;
-class QGraphicsDropShadowEffect;
 class QGraphicsOpacityEffect;
 class QLabel;
 class QListView;
@@ -111,7 +110,6 @@ class Dashboard : public QWidget {
     QLabel* m_heroSub = nullptr;
     DashButton* m_playButton = nullptr;
     DashButton* m_stopButton = nullptr;
-    QGraphicsDropShadowEffect* m_playGlow = nullptr;
     QLabel* m_statusText = nullptr;
     QLabel* m_playtime = nullptr;
     QProgressBar* m_activity = nullptr;
@@ -127,13 +125,13 @@ class Dashboard : public QWidget {
     // appearance drawer widgets
     QWidget* m_drawerBody = nullptr;
     QVariantAnimation* m_drawerAnim = nullptr;
-    QLabel* m_drawerChevron = nullptr;
     bool m_drawerOpen = false;
+    QList<DashButton*> m_styleChips;
     QSlider* m_hueSlider = nullptr;
     QSlider* m_dimSlider = nullptr;
     DashSwitch* m_onlyThisInstance = nullptr;
-    DashButton* m_baseDark = nullptr;
-    DashButton* m_baseAmoled = nullptr;
+    DashSwitch* m_pixelSwitch = nullptr;
+    DashSwitch* m_animSwitch = nullptr;
     QLabel* m_wallpaperName = nullptr;
     QTimer* m_themeTimer = nullptr;
     QString m_lastInstanceId;

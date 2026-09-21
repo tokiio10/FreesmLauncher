@@ -1852,7 +1852,7 @@ void MainWindow::showDashboardContextMenu(const QPoint& globalPos)
     actionHeader->setEnabled(false);
     actions.prepend(actionHeader);
 
-    QMenu menu;
+    QMenu menu(m_dashboard);  // parented to the dashboard so it wears the same style
     menu.addActions(actions);
     menu.exec(globalPos);
     actionSep->deleteLater();
